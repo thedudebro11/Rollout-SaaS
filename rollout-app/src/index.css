@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Vendor Dark Theme ── */
+  --color-bg:             #0a0a0a;
+  --color-surface:        #141414;
+  --color-surface-raised: #1c1c1c;
+  --color-border:         #2a2a2a;
+  --color-border-subtle:  #1f1f1f;
+
+  --color-accent:         #FF6B35;
+  --color-accent-hover:   #ff7d4d;
+  --color-accent-muted:   rgba(255,107,53,0.15);
+
+  --color-text-primary:   #f5f5f5;
+  --color-text-secondary: #888888;
+  --color-text-tertiary:  #555555;
+
+  --color-success:        #22c55e;
+  --color-success-muted:  rgba(34,197,94,0.12);
+  --color-warning:        #f59e0b;
+  --color-warning-muted:  rgba(245,158,11,0.12);
+  --color-error:          #ef4444;
+  --color-error-muted:    rgba(239,68,68,0.12);
+
+  /* ── Customer Light Theme ── */
+  --color-customer-bg:      #fafaf8;
+  --color-customer-surface: #ffffff;
+  --color-customer-border:  #e5e5e3;
+  --color-customer-text:    #1a1a1a;
+  --color-customer-muted:   #666666;
+  --color-customer-cta:     #1a1a1a;
+
+  /* ── Typography ── */
+  --font-display: 'Syne', sans-serif;
+  --font-body:    'DM Sans', sans-serif;
+  --font-mono:    'DM Mono', monospace;
+
+  /* ── Border Radius ── */
+  --radius-card:   12px;
+  --radius-button: 8px;
+  --radius-input:  8px;
+}
+
+/* ── Base resets ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #0a0a0a;
+  color: #f5f5f5;
+  font-family: 'DM Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #141414; }
+::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
