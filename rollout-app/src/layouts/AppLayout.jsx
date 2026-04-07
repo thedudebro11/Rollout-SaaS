@@ -11,6 +11,12 @@ import {
   LogOut,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
+
+async function doSignOut() {
+  await supabase.auth.signOut()
+  window.location.replace('/login')
+}
 
 const NAV_ITEMS = [
   { to: '/dashboard',    label: 'Dashboard',   icon: LayoutDashboard },
@@ -34,14 +40,6 @@ function Logo() {
 }
 
 function Sidebar({ unreadCount }) {
-  const { signOut, vendor } = useAuth()
-  const navigate = useNavigate()
-
-  async function handleSignOut() {
-    await signOut()
-    navigate('/login')
-  }
-
   return (
     <aside className="hidden md:flex flex-col w-60 min-h-screen bg-surface border-r border-border flex-shrink-0">
       <Logo />
@@ -89,7 +87,7 @@ function Sidebar({ unreadCount }) {
         </NavLink>
 
         <button
-          onClick={handleSignOut}
+          onClick={doSignOut}
           className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body font-medium text-text-secondary hover:text-text-primary hover:bg-surface-raised transition-colors border-l-4 border-transparent pl-2 w-full text-left"
         >
           <LogOut size={18} />
@@ -101,7 +99,7 @@ function Sidebar({ unreadCount }) {
 }
 
 function BottomNav({ unreadCount }) {
-  const MOBILE_ITEMS = NAV_ITEMS.slice(0, 5) // max 5 items
+  const MOBILE_ITEMS = NAV_ITEMS.slice(0, 4)
 
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-surface border-t border-border flex items-center z-50">
@@ -123,6 +121,13 @@ function BottomNav({ unreadCount }) {
           <span className="truncate max-w-[48px]">{label}</span>
         </NavLink>
       ))}
+      <button
+        onClick={doSignOut}
+        className="flex-1 flex flex-col items-center justify-center gap-1 py-2 text-xs font-body text-text-tertiary transition-colors"
+      >
+        <LogOut size={20} />
+        <span>Sign out</span>
+      </button>
     </nav>
   )
 }

@@ -589,7 +589,7 @@ export function OnboardingPage() {
     setSaving(true)
     setError('')
 
-    // Save first location if not skipped
+    // Save first location if not skipped and all required fields present
     if (!step5.skip && step5.address && step5.date && step5.startTime && step5.endTime) {
       const { error: locError } = await supabase
         .from('locations')
@@ -602,21 +602,34 @@ export function OnboardingPage() {
           notes: step5.notes.trim() || null,
         })
       if (locError) {
-        setSaving(false)
-        setError('Could not save location. You can add it from the Locations page.')
-        // Non-fatal — still finish onboarding
+        // Non-fatal — vendor can add from Locations page
+        console.error('Location save failed:', locError.message)
       }
     }
 
-    // Mark onboarding complete
-    const { error: dbError } = await supabase
-      .from('vendors')
-      .update({ onboarding_complete: true })
-      .eq('user_id', user.id)
+    // Call edge function — provisions Twilio number + marks onboarding_complete
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/onboarding-complete`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ vendor_id: vendor.id }),
+        }
+      )
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Setup failed')
+    } catch (err) {
+      setSaving(false)
+      setError(err.message || 'Failed to complete setup. Please try again.')
+      return false
+    }
 
     setSaving(false)
-    if (dbError) { setError('Failed to complete setup. Please try again.'); return false }
-
     await refreshVendor()
     navigate('/dashboard')
     return true
@@ -643,12 +656,23 @@ export function OnboardingPage() {
 
   const isLastStep = step === TOTAL_STEPS - 1
 
+  async function handleSignOut() {
+    await supabase.auth.signOut()
+    window.location.replace('/login')
+  }
+
   return (
     <div className="min-h-screen bg-bg flex flex-col items-center justify-center px-4 py-12">
-      {/* Logo */}
+      {/* Logo + sign out */}
       <div className="flex items-center gap-2.5 mb-10">
         <div className="w-8 h-8 rounded-full bg-accent" />
         <span className="font-display font-bold text-xl text-text-primary tracking-tight">Rollout</span>
+        <button
+          onClick={handleSignOut}
+          className="ml-6 text-text-tertiary text-xs hover:text-text-secondary transition-colors underline underline-offset-2"
+        >
+          Sign out
+        </button>
       </div>
 
       <div className="w-full max-w-sm">
