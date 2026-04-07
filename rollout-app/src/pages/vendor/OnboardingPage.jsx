@@ -610,20 +610,27 @@ export function OnboardingPage() {
     // Call edge function — provisions Twilio number + marks onboarding_complete
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/onboarding-complete`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({ vendor_id: vendor.id }),
-        }
-      )
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Setup failed')
+      console.log('[Onboarding] session present:', !!session, '| token present:', !!session?.access_token)
+
+      // Debug: verify the session token before invoking
+      const { data: { session: dbgSession } } = await supabase.auth.getSession()
+      console.log('[Onboarding] session exists:', !!dbgSession)
+      console.log('[Onboarding] token prefix:', dbgSession?.access_token?.slice(0, 20) ?? 'NO TOKEN')
+      console.log('[Onboarding] vendor.id:', vendor?.id ?? 'NO VENDOR')
+
+      const { data, error: fnError } = await supabase.functions.invoke('onboarding-complete', {
+        body: { vendor_id: vendor.id },
+      })
+      if (fnError) {
+        // Extract the actual response body from the edge function error
+        let body = null
+        try { body = await fnError.context?.json() } catch (_) {}
+        console.error('[Onboarding] fn error — status:', fnError.context?.status, '| body:', body)
+        throw new Error(body?.error || body?.checkpoint || fnError.message)
+      }
+      console.log('[Onboarding] fn success:', data)
     } catch (err) {
+      console.error('[Onboarding] caught:', err.message)
       setSaving(false)
       setError(err.message || 'Failed to complete setup. Please try again.')
       return false
@@ -657,7 +664,7 @@ export function OnboardingPage() {
   const isLastStep = step === TOTAL_STEPS - 1
 
   async function handleSignOut() {
-    await supabase.auth.signOut()
+    await supabase.auth.signOut({ scope: 'local' })
     window.location.replace('/login')
   }
 

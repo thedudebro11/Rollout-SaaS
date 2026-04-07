@@ -16,10 +16,10 @@ export function AuthProvider({ children }) {
 
     // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      (_event, session) => {
         setSession(session)
         if (session) {
-          await fetchVendor(session.user.id)
+          fetchVendor(session.user.id) // fire-and-forget — must not await inside auth callback
         } else {
           setVendor(null)
         }

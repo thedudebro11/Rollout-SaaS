@@ -14,7 +14,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 
 async function doSignOut() {
-  await supabase.auth.signOut()
+  await supabase.auth.signOut({ scope: 'local' })
   window.location.replace('/login')
 }
 

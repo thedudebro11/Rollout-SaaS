@@ -2,182 +2,161 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const TWILIO_ACCOUNT_SID  = Deno.env.get('TWILIO_ACCOUNT_SID')!
-const TWILIO_AUTH_TOKEN   = Deno.env.get('TWILIO_AUTH_TOKEN')!
-const TWILIO_WEBHOOK_URL  = Deno.env.get('TWILIO_WEBHOOK_URL')!  // this function's sibling: /twilio-inbound
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
 // ── Twilio helpers ────────────────────────────────────────────────────────────
 
-const twilioBase = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}`
+async function provisionPhoneNumber(accountSid: string, authToken: string, webhookUrl: string) {
+  const base = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}`
+  const authHeader = 'Basic ' + btoa(`${accountSid}:${authToken}`)
 
-function twilioAuth() {
-  return 'Basic ' + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`)
-}
+  const searchRes = await fetch(`${base}/AvailablePhoneNumbers/US/Local.json?Limit=1`, {
+    headers: { Authorization: authHeader },
+  })
+  const searchJson = await searchRes.json()
+  if (!searchRes.ok) throw new Error(searchJson.message || 'Twilio search failed')
+  if (!searchJson.available_phone_numbers?.length) throw new Error('No available numbers')
 
-async function twilioRequest(path: string, method: string, body?: Record<string, string>) {
-  const res = await fetch(`${twilioBase}${path}`, {
-    method,
+  const numberToProvision = searchJson.available_phone_numbers[0].phone_number
+
+  const purchaseRes = await fetch(`${base}/IncomingPhoneNumbers.json`, {
+    method: 'POST',
     headers: {
-      Authorization: twilioAuth(),
+      Authorization: authHeader,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
-    body: body ? new URLSearchParams(body).toString() : undefined,
+    body: new URLSearchParams({ PhoneNumber: numberToProvision, SmsUrl: webhookUrl, SmsMethod: 'POST' }).toString(),
   })
-  const json = await res.json()
-  if (!res.ok) throw new Error(json.message || 'Twilio API error')
-  return json
-}
+  const purchaseJson = await purchaseRes.json()
+  if (!purchaseRes.ok) throw new Error(purchaseJson.message || 'Twilio purchase failed')
 
-async function provisionPhoneNumber(): Promise<{ phoneNumber: string; sid: string }> {
-  // Search for an available US local number
-  const available = await twilioRequest(
-    `/AvailablePhoneNumbers/US/Local.json?Limit=1`,
-    'GET'
-  )
-
-  if (!available.available_phone_numbers?.length) {
-    throw new Error('No available phone numbers found')
-  }
-
-  const numberToProvision = available.available_phone_numbers[0].phone_number
-
-  // Purchase the number and point its inbound webhook at our handler
-  const purchased = await twilioRequest(
-    `/IncomingPhoneNumbers.json`,
-    'POST',
-    {
-      PhoneNumber: numberToProvision,
-      SmsUrl: TWILIO_WEBHOOK_URL,
-      SmsMethod: 'POST',
-    }
-  )
-
-  return { phoneNumber: purchased.phone_number, sid: purchased.sid }
+  return { phoneNumber: purchaseJson.phone_number, sid: purchaseJson.sid }
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-Deno.serve(async (req) => {
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+
+  // ── Checkpoint 1: auth ────────────────────────────────────────────────────
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_ANON_KEY')!,
+    { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } }
+  )
+
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+  if (authError || !user) {
+    console.error('[CP1] auth failed:', authError?.message)
+    return json({ error: 'Unauthorized', checkpoint: 'auth' }, 401)
   }
+  console.log('[CP1] auth ok, user:', user.id)
 
+  // ── Checkpoint 2: parse body ──────────────────────────────────────────────
+  let vendor_id: string
   try {
-    // Auth — get calling user's session from the JWT in the Authorization header
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_ANON_KEY')!,
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
-    )
+    const body = await req.json()
+    vendor_id = body.vendor_id
+    if (!vendor_id) throw new Error('vendor_id missing')
+  } catch (err) {
+    console.error('[CP2] body parse failed:', err.message)
+    return json({ error: 'Invalid request body', checkpoint: 'body_parse' }, 400)
+  }
+  console.log('[CP2] body ok, vendor_id:', vendor_id)
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
-    }
+  // ── Checkpoint 3: vendor lookup ───────────────────────────────────────────
+  const { data: vendor, error: vendorError } = await supabase
+    .from('vendors')
+    .select('id, user_id, twilio_phone_number, onboarding_complete')
+    .eq('id', vendor_id)
+    .single()
 
-    const { vendor_id } = await req.json()
+  if (vendorError || !vendor) {
+    console.error('[CP3] vendor not found:', vendorError?.message)
+    return json({ error: 'Vendor not found', checkpoint: 'vendor_lookup', details: vendorError?.message }, 404)
+  }
+  if (vendor.user_id !== user.id) {
+    console.error('[CP3] ownership mismatch')
+    return json({ error: 'Forbidden', checkpoint: 'vendor_ownership' }, 403)
+  }
+  console.log('[CP3] vendor ok:', vendor.id)
 
-    // Verify vendor belongs to this user
-    const { data: vendor, error: vendorError } = await supabase
-      .from('vendors')
-      .select('id, user_id, twilio_phone_number, onboarding_complete')
-      .eq('id', vendor_id)
-      .single()
+  // ── Checkpoint 4: admin client ────────────────────────────────────────────
+  const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY')
+  if (!serviceRoleKey) {
+    console.error('[CP4] SUPABASE_SERVICE_ROLE_KEY not set')
+    return json({ error: 'Server misconfiguration: missing service role key', checkpoint: 'service_role_key' }, 500)
+  }
+  const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, serviceRoleKey)
+  console.log('[CP4] admin client ok')
 
-    if (vendorError || !vendor) {
-      return new Response(JSON.stringify({ error: 'Vendor not found' }), {
-        status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
-    }
+  // ── Checkpoint 5: Twilio provisioning (skip if creds not set) ─────────────
+  let twilioPhoneNumber = vendor.twilio_phone_number
 
-    if (vendor.user_id !== user.id) {
-      return new Response(JSON.stringify({ error: 'Forbidden' }), {
-        status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      })
-    }
+  if (!twilioPhoneNumber) {
+    const accountSid  = Deno.env.get('TWILIO_ACCOUNT_SID')
+    const authToken   = Deno.env.get('TWILIO_AUTH_TOKEN')
+    const webhookUrl  = Deno.env.get('TWILIO_WEBHOOK_URL')
 
-    // Use service role for writes that bypass RLS
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    )
-
-    let twilioPhoneNumber = vendor.twilio_phone_number
-
-    // Only provision if not already done (idempotent)
-    if (!twilioPhoneNumber) {
+    if (!accountSid || !authToken || !webhookUrl) {
+      console.log('[CP5] Twilio creds not set — skipping provisioning')
+    } else {
+      console.log('[CP5] provisioning Twilio number...')
       let provisionedNumber: string | null = null
       let provisionedSid: string | null = null
-      let provisionError: string | null = null
+      let provisionError = ''
 
-      // Retry up to 3 times per spec
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          const result = await provisionPhoneNumber()
+          const result = await provisionPhoneNumber(accountSid, authToken, webhookUrl)
           provisionedNumber = result.phoneNumber
           provisionedSid = result.sid
+          console.log('[CP5] provisioned:', provisionedNumber)
           break
         } catch (err) {
           provisionError = err.message
+          console.error(`[CP5] attempt ${attempt} failed:`, provisionError)
           if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt))
         }
       }
 
-      if (!provisionedNumber) {
-        // Log failure — still mark onboarding complete so vendor isn't stuck
-        console.error(`Twilio provisioning failed for vendor ${vendor_id}: ${provisionError}`)
-
-        await supabaseAdmin
+      if (provisionedNumber) {
+        const { error: storeErr } = await supabaseAdmin
           .from('vendors')
-          .update({ onboarding_complete: true })
+          .update({ twilio_phone_number: provisionedNumber, twilio_phone_sid: provisionedSid })
           .eq('id', vendor_id)
-
-        return new Response(
-          JSON.stringify({
-            success: true,
-            twilio_provisioned: false,
-            error: 'Phone number provisioning failed — our team has been notified.',
-          }),
-          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
+        if (storeErr) console.error('[CP5] store phone failed:', storeErr.message)
+        else twilioPhoneNumber = provisionedNumber
+      } else {
+        console.error('[CP5] all provisioning attempts failed:', provisionError)
+        // Non-fatal — continue to mark onboarding complete
       }
-
-      // Store on vendor row
-      await supabaseAdmin
-        .from('vendors')
-        .update({
-          twilio_phone_number: provisionedNumber,
-          twilio_phone_sid: provisionedSid,
-        })
-        .eq('id', vendor_id)
-
-      twilioPhoneNumber = provisionedNumber
     }
-
-    // Mark onboarding complete
-    await supabaseAdmin
-      .from('vendors')
-      .update({ onboarding_complete: true })
-      .eq('id', vendor_id)
-
-    return new Response(
-      JSON.stringify({ success: true, twilio_phone_number: twilioPhoneNumber }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
-
-  } catch (err) {
-    console.error('onboarding-complete error:', err)
-    return new Response(
-      JSON.stringify({ error: 'Internal server error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+  } else {
+    console.log('[CP5] already has Twilio number, skipping')
   }
+
+  // ── Checkpoint 6: mark onboarding complete ────────────────────────────────
+  const { error: updateErr } = await supabaseAdmin
+    .from('vendors')
+    .update({ onboarding_complete: true })
+    .eq('id', vendor_id)
+
+  if (updateErr) {
+    console.error('[CP6] onboarding_complete update failed:', updateErr.message)
+    return json({ error: 'Failed to complete onboarding', checkpoint: 'onboarding_complete', details: updateErr.message }, 500)
+  }
+  console.log('[CP6] onboarding_complete = true')
+
+  return json({ success: true, twilio_phone_number: twilioPhoneNumber })
 })
