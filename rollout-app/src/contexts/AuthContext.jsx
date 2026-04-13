@@ -6,12 +6,14 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined) // undefined = loading
   const [vendor, setVendor] = useState(null)
+  const [vendorLoading, setVendorLoading] = useState(false)
 
   useEffect(() => {
     // Get current session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
       if (session) fetchVendor(session.user.id)
+      else setVendorLoading(false)
     })
 
     // Listen for auth state changes
@@ -22,6 +24,7 @@ export function AuthProvider({ children }) {
           fetchVendor(session.user.id) // fire-and-forget — must not await inside auth callback
         } else {
           setVendor(null)
+          setVendorLoading(false)
         }
       }
     )
@@ -30,12 +33,14 @@ export function AuthProvider({ children }) {
   }, [])
 
   async function fetchVendor(userId) {
+    setVendorLoading(true)
     const { data } = await supabase
       .from('vendors')
       .select('*')
       .eq('user_id', userId)
       .single()
     setVendor(data)
+    setVendorLoading(false)
   }
 
   async function signUp(email, password) {
@@ -68,7 +73,7 @@ export function AuthProvider({ children }) {
     session,
     user: session?.user ?? null,
     vendor,
-    loading: session === undefined,
+    loading: session === undefined || vendorLoading,
     signUp,
     signIn,
     signOut,
