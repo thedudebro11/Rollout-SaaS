@@ -11,20 +11,25 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     // Get current session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      if (session) fetchVendor(session.user.id)
-      else setVendorLoading(false)
+      if (session) {
+        setVendorLoading(true)  // must be set before session so both batch in one render
+        setSession(session)
+        fetchVendor(session.user.id)
+      } else {
+        setSession(null)
+      }
     })
 
     // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
-        setSession(session)
         if (session) {
-          fetchVendor(session.user.id) // fire-and-forget — must not await inside auth callback
+          setVendorLoading(true)  // synchronous — batches with setSession, no blank-screen window
+          setSession(session)
+          fetchVendor(session.user.id)
         } else {
+          setSession(null)
           setVendor(null)
-          setVendorLoading(false)
         }
       }
     )
@@ -33,7 +38,7 @@ export function AuthProvider({ children }) {
   }, [])
 
   async function fetchVendor(userId) {
-    setVendorLoading(true)
+    // vendorLoading already true — set by caller before this runs
     const { data } = await supabase
       .from('vendors')
       .select('*')
