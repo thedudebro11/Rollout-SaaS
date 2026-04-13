@@ -1,6 +1,6 @@
 # Rollout — Project State
 **Last updated: 2026-04-13**
-**Status: Modules 1–12 complete and tested. App is feature-complete.**
+**Status: All modules + Live Location + QR Code complete. Deployed to Vercel. V1 feature-complete.**
 
 ---
 
@@ -15,6 +15,13 @@ Rollout is a B2B SaaS platform for food truck operators. It solves the problem o
 - **For the operator:** A growing subscriber list + automated morning SMS with that day's location → zero manual effort after setup.
 - **For the customer:** One QR code scan, enter a phone number, done. No app download, no account.
 
+### Live URLs
+
+| Environment | URL |
+|---|---|
+| Production (Vercel) | https://rollout-saa-s.vercel.app |
+| Supabase project | https://supabase.com/dashboard/project/pprorqwkmuqrsddjotvx |
+
 ### High-level system architecture
 
 ```
@@ -25,6 +32,7 @@ Rollout is a B2B SaaS platform for food truck operators. It solves the problem o
      └──────────┬─────────────┘
                 |
          [React + Vite SPA]
+         (deployed on Vercel)
                 |
        ┌────────┴────────┐
        |                 |
@@ -53,7 +61,10 @@ Rollout is a B2B SaaS platform for food truck operators. It solves the problem o
 | SMS | Twilio (send/receive, number provisioning) |
 | Storage | Supabase Storage (`vendor-logos` bucket, public read) |
 | Payments | Stripe (Checkout, webhooks, subscription management) |
-| Realtime | Supabase Realtime on: `conversations`, `conversation_messages`, `sentiment_responses`, `subscribers` |
+| Realtime | Supabase Realtime on: `vendors`, `conversations`, `conversation_messages` |
+| Hosting | Vercel (auto-deploys from GitHub main branch) |
+| QR / PDF | `qrcode` (canvas render) + `jsPDF` (print-ready A4 flyer) |
+| Geocoding | OpenStreetMap Nominatim (free, no API key) |
 
 ---
 
@@ -72,6 +83,19 @@ Rollout is a B2B SaaS platform for food truck operators. It solves the problem o
 **Critical — auth mutex:** `onAuthStateChange` callback must be synchronous. Making it `async` causes a deadlock on sign-out. Fire `fetchVendor()` as a non-async fire-and-forget.
 
 **Critical — sign out:** Use `await supabase.auth.signOut({ scope: 'local' })` then `window.location.replace('/login')`. The `scope: 'local'` prevents server round-trip and resolves the auth mutex issue.
+
+**Critical — vendorLoading race:** `vendorLoading` must be set to `true` in the same synchronous block as `setSession()`, before `fetchVendor()` is called. If set inside the async function, React may render a frame with session set but vendorLoading=false, causing a blank-screen flash on direct URL navigation.
+
+```javascript
+// CORRECT — both set synchronously, React batches them
+setVendorLoading(true)
+setSession(session)
+fetchVendor(session.user.id)  // async, sets vendorLoading=false when done
+
+// WRONG — vendorLoading set inside async function, causes blank flash
+setSession(session)
+fetchVendor(...)  // inside: setVendorLoading(true) — too late
+```
 
 **Key files:** `src/contexts/AuthContext.jsx`, `src/components/ProtectedRoute.jsx`, `src/layouts/AppLayout.jsx`, `src/pages/auth/`
 
@@ -122,24 +146,6 @@ Edge function `send-morning-sms` triggered by cron every 5 minutes. Finds vendor
 
 **Idempotency:** `locations.morning_sms_sent` flag prevents duplicate sends.
 
-**Cron setup (run once in Supabase SQL editor):**
-```sql
-select cron.schedule(
-  'morning-sms-broadcast',
-  '*/5 * * * *',
-  $$
-  select net.http_post(
-    url     := 'https://pprorqwkmuqrsddjotvx.supabase.co/functions/v1/send-morning-sms',
-    headers := jsonb_build_object(
-      'Authorization', 'Bearer <CRON_SECRET_VALUE>',
-      'Content-Type',  'application/json'
-    ),
-    body    := '{}'::jsonb
-  )
-  $$
-);
-```
-
 **Key files:** `supabase/functions/send-morning-sms/index.ts`
 
 ---
@@ -167,31 +173,13 @@ Edge function `twilio-inbound` receives Twilio webhook POSTs (form-encoded). Rou
 ### Module 7 — Sentiment Collection
 **Status: Complete and tested.**
 
-Edge function `send-sentiment-sms` triggered by cron every 5 minutes. Finds locations where `morning_sms_sent = true`, `sentiment_sms_sent = false`, and `end_time + sentiment_delay_hours` has passed in vendor's timezone.
+Edge function `send-sentiment-sms` triggered by cron (hourly). Finds locations where `morning_sms_sent = true`, `sentiment_sms_sent = false`, and `end_time + sentiment_delay_hours` has passed in vendor's timezone.
 
 Only sends to subscribers in `idle` state — does not interrupt active conversations.
 
 After sending, transitions subscriber state to `awaiting_sentiment`. Module 6 handles the reply.
 
 **SMS message:** `How was your visit to [Name] today? Reply YES if you loved it or NO if it could be better 🌮`
-
-**Cron setup (same pattern as morning SMS, separate job):**
-```sql
-select cron.schedule(
-  'sentiment-sms-broadcast',
-  '*/5 * * * *',
-  $$
-  select net.http_post(
-    url     := 'https://pprorqwkmuqrsddjotvx.supabase.co/functions/v1/send-sentiment-sms',
-    headers := jsonb_build_object(
-      'Authorization', 'Bearer <CRON_SECRET_VALUE>',
-      'Content-Type',  'application/json'
-    ),
-    body    := '{}'::jsonb
-  )
-  $$
-);
-```
 
 **Key files:** `supabase/functions/send-sentiment-sms/index.ts`
 
@@ -283,11 +271,10 @@ Vendor page at `/billing`. Three-tier pricing (Starter $29, Pro $49, Fleet $99).
 - `customer.subscription.updated` → sync status + period end
 - `customer.subscription.deleted` → set canceled
 
-**Stripe webhook setup (after deploying `stripe-webhook` function):**
-1. Stripe Dashboard → Developers → Webhooks → Add endpoint
-2. URL: `https://pprorqwkmuqrsddjotvx.supabase.co/functions/v1/stripe-webhook`
-3. Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
-4. Copy the signing secret → add as `STRIPE_WEBHOOK_SECRET` Supabase secret
+**Stripe webhook setup (done):**
+- Endpoint: `https://pprorqwkmuqrsddjotvx.supabase.co/functions/v1/stripe-webhook`
+- Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
+- `STRIPE_WEBHOOK_SECRET` set in Supabase secrets
 
 **Key files:** `src/pages/vendor/BillingPage.jsx`, `supabase/functions/create-checkout-session/index.ts`, `supabase/functions/stripe-webhook/index.ts`
 
@@ -304,6 +291,44 @@ Vendor page at `/settings`. Three independent save sections:
 Each section saves independently with its own Save button and "Saved" confirmation state.
 
 **Key files:** `src/pages/vendor/SettingsPage.jsx`
+
+---
+
+### Live Location
+**Status: Complete.**
+
+Vendor sidebar widget + customer public page banner.
+
+**How it works:**
+1. Vendor clicks "Go Live" button in sidebar → browser geolocation prompt
+2. `navigator.geolocation.watchPosition` tracks movement continuously
+3. Reverse geocodes coords via OpenStreetMap Nominatim (free, no API key)
+4. Pushes lat/lng/address to `vendors` table every 30 seconds
+5. Pulsing green dot + elapsed timer shown in sidebar while live
+6. Stop button, `beforeunload` handler, and unmount cleanup all call `stopLive()`
+7. Customer's public schedule page receives update instantly via Supabase Realtime
+8. "Live now" banner appears with address + Google Maps link
+9. Staleness check: banner auto-hides if `live_updated_at` > 5 minutes old (handles tab crash)
+
+**Migration:** `005_live_location.sql` — adds `is_live`, `live_lat`, `live_lng`, `live_address`, `live_updated_at` to vendors table. Already applied.
+
+**Key files:** `src/components/LiveLocationWidget.jsx`, `src/pages/customer/PublicSchedulePage.jsx`
+
+---
+
+### QR Code Page
+**Status: Complete.**
+
+Vendor page at `/qr-code`.
+
+- QR code rendered to `<canvas>` via `qrcode` library (already in deps)
+- QR encodes: `window.location.origin + '/' + vendor.slug`
+- Copy link button with 2s "Copied!" confirmation flash
+- **Download PNG** — `canvas.toDataURL()` → programmatic anchor click
+- **Download Flyer PDF** — jsPDF A4 with: vendor name + description header, QR code centered, "Scan for schedule" headline, SMS subscribe CTA box, public URL footer
+- How-to-use guide with numbered steps
+
+**Key files:** `src/pages/vendor/QRCodePage.jsx`
 
 ---
 
@@ -324,6 +349,8 @@ Each section saves independently with its own Save button and "Saved" confirmati
 | 11 | Analytics | ✅ Complete |
 | 12 | Billing / Stripe | ✅ Complete |
 | — | Settings Page | ✅ Complete |
+| — | Live Location | ✅ Complete |
+| — | QR Code Page | ✅ Complete |
 
 ---
 
@@ -339,6 +366,7 @@ All tables live in `public` schema with RLS enabled. Applied via `supabase/migra
 | `002_public_vendor_read.sql` | Public SELECT policy on vendors (needed for `/join/:slug`) |
 | `003_public_locations_read.sql` | Public SELECT policy on locations (needed for public schedule page) |
 | `004_stripe_price_ids.sql` | Links Stripe monthly price IDs to seeded plans |
+| `005_live_location.sql` | Adds live location columns to vendors + enables Realtime on vendors table |
 
 ### Tables
 
@@ -358,6 +386,11 @@ All tables live in `public` schema with RLS enabled. Applied via `supabase/migra
 | `onboarding_complete` | boolean | gates public visibility and dashboard access |
 | `twilio_phone_number` | text | E.164 provisioned number |
 | `twilio_phone_sid` | text | Twilio SID |
+| `is_live` | boolean | true while vendor is broadcasting live location |
+| `live_lat` | double precision | current GPS latitude |
+| `live_lng` | double precision | current GPS longitude |
+| `live_address` | text | reverse-geocoded street address |
+| `live_updated_at` | timestamptz | last ping time — used for staleness check |
 
 #### `subscribers`
 | Column | Type | Notes |
@@ -454,12 +487,33 @@ All functions have `verify_jwt = false` in `config.toml`. Authenticated function
 | `CRON_SECRET` | send-morning-sms, send-sentiment-sms | Must match value in pg_cron SQL |
 | `STRIPE_SECRET_KEY` | create-checkout-session, stripe-webhook | `sk_test_...` |
 | `STRIPE_PUBLISHABLE_KEY` | (frontend via env) | `pk_test_...` |
-| `STRIPE_WEBHOOK_SECRET` | stripe-webhook | From Stripe Dashboard → Webhooks |
-| `FRONTEND_URL` | create-checkout-session | Stripe redirect base URL, default `http://localhost:5173` |
+| `STRIPE_WEBHOOK_SECRET` | stripe-webhook | ✅ Set — from Stripe Dashboard Webhooks |
+| `FRONTEND_URL` | create-checkout-session | ✅ Set — `https://rollout-saa-s.vercel.app` |
 
 ---
 
-## 8. Auth Model
+## 8. Infrastructure
+
+### Vercel deployment
+- **URL:** https://rollout-saa-s.vercel.app
+- **Root directory:** `rollout-app`
+- **Auto-deploys:** on every push to `main`
+- **Env vars set:** `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
+- **SPA routing:** `vercel.json` rewrites all paths to `index.html`
+
+### Supabase Auth URL config
+- **Site URL:** `https://rollout-saa-s.vercel.app`
+- **Redirect URLs:** `https://rollout-saa-s.vercel.app/**`
+
+### pg_cron jobs (set up in Supabase)
+| Job | Schedule | Function |
+|---|---|---|
+| `morning-sms-daily` | `0 13 * * *` (8am Central) | `send-morning-sms` |
+| `sentiment-sms-hourly` | `0 * * * *` (every hour) | `send-sentiment-sms` |
+
+---
+
+## 9. Auth Model
 
 ### Route protection
 
@@ -477,7 +531,7 @@ Always use `supabase.functions.invoke()` — never raw `fetch()`. The invoke met
 
 ---
 
-## 9. Twilio Integration
+## 10. Twilio Integration
 
 ### Known limitation — A2P 10DLC
 
@@ -492,11 +546,9 @@ SMS delivery to US numbers requires A2P 10DLC registration. Trial Twilio account
 Twilio is configured to POST inbound SMS to:
 `https://pprorqwkmuqrsddjotvx.supabase.co/functions/v1/twilio-inbound`
 
-This is set during onboarding via `TWILIO_WEBHOOK_URL` secret.
-
 ---
 
-## 10. Known Working Flows
+## 11. Known Working Flows
 
 ### Full vendor lifecycle
 
@@ -512,32 +564,21 @@ This is set during onboarding via `TWILIO_WEBHOOK_URL` secret.
 10. Vendor marks conversation resolved
 11. Vendor checks Dashboard for subscriber count + sentiment score
 12. Vendor upgrades from trial to paid plan via Billing page
+13. Vendor clicks "Go Live" → customers see real-time location on public schedule page
+14. Customer scans QR code → public schedule page → subscribes
 
 ---
 
-## 11. Known Limitations and TODOs
+## 12. Remaining Before Real Launch
 
-### Before production
+### Must do
+- Upgrade Twilio to paid account + complete A2P 10DLC registration (required for SMS delivery to real US numbers)
+- Remove debug `console.log` statements from edge functions and frontend
+- Switch Stripe from test keys to live keys
+- Set up a custom domain
 
-- Remove debug `console.log` statements:
-  - `src/lib/supabase.js` — `console.log('SUPABASE URL:', supabaseUrl)`
-  - `src/pages/vendor/OnboardingPage.jsx` — `[Onboarding]` logs
-  - `supabase/functions/onboarding-complete/index.ts` — `[CP1]–[CP6]` logs
-- Set `FRONTEND_URL` secret to production domain in Supabase
-- Complete A2P 10DLC registration in Twilio
-- Set up `STRIPE_WEBHOOK_SECRET` after creating webhook endpoint in Stripe
-- Set up pg_cron jobs for `send-morning-sms` and `send-sentiment-sms`
-- Change `CRON_SECRET` to a strong random value in production
-
-### Known risks
-
-- Cross-midnight sentiment: if `end_time + sentiment_delay_hours >= 24:00`, the sentiment SMS is skipped. Vendors who close late (e.g. 10 PM + 3h delay = 1 AM) won't get sentiment asks.
-- `/:slug` catch-all route in `App.jsx` must remain last in the route list.
-- Opted-out subscribers who re-scan QR are reactivated silently — Twilio handles STOP compliance at carrier level.
-
-### Not built
-
-- QR Code page (`/qr-code`) — currently a stub. QR is accessible during onboarding only.
-- Public schedule page (`/:slug`) — stub exists (`PublicSchedulePage.jsx`), content not built.
-- Recurring location expansion — `is_recurring` and `recurrence_rule` stored but not auto-expanded into future dates.
-- Multi-truck support (Fleet plan) — schema supports it (`truck_limit`), UI does not.
+### Nice to have
+- Landing/marketing page explaining Rollout to new operators
+- Recurring location expansion (`is_recurring` stored but not auto-expanded)
+- Multi-truck support (Fleet plan — schema ready, UI not built)
+- Email notifications as fallback to SMS
