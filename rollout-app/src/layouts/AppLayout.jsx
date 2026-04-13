@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { LiveLocationWidget } from '../components/LiveLocationWidget'
 import {
   LayoutDashboard,
   MapPin,
@@ -8,6 +9,7 @@ import {
   BarChart2,
   QrCode,
   Settings,
+  CreditCard,
   LogOut,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
@@ -69,9 +71,26 @@ function Sidebar({ unreadCount }) {
         ))}
       </nav>
 
+      {/* Live Location Widget */}
+      <LiveLocationWidget />
+
       {/* Bottom: Settings + Sign out */}
       <div className="px-2 pb-4 flex flex-col gap-0.5">
         <div className="h-px bg-border mx-2 mb-2" />
+        <NavLink
+          to="/billing"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-body font-medium transition-colors
+            ${isActive
+              ? 'bg-accent-muted text-accent border-l-4 border-accent pl-2'
+              : 'text-text-secondary hover:text-text-primary hover:bg-surface-raised border-l-4 border-transparent pl-2'
+            }`
+          }
+        >
+          <CreditCard size={18} />
+          <span>Billing</span>
+        </NavLink>
+
         <NavLink
           to="/settings"
           className={({ isActive }) =>

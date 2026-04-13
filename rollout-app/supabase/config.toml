@@ -3,3 +3,21 @@ verify_jwt = false
 
 [functions.subscriber-optin]
 verify_jwt = false
+
+[functions.send-morning-sms]
+verify_jwt = false
+
+[functions.twilio-inbound]
+verify_jwt = false
+
+[functions.send-sentiment-sms]
+verify_jwt = false
+
+[functions.vendor-reply]
+verify_jwt = false
+
+[functions.create-checkout-session]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
