@@ -135,6 +135,7 @@ export function DashboardPage() {
 
   useEffect(() => {
     if (vendor) loadDashboard()
+    else setLoading(false)
   }, [vendor])
 
   async function loadDashboard() {
