@@ -49,6 +49,22 @@ function Field({ label, hint, children }) {
 
 const inputClass = "w-full bg-surface-raised border border-border rounded-lg px-3 py-2.5 text-text-primary font-body text-sm placeholder-text-tertiary focus:outline-none focus:border-accent transition-colors"
 
+function toE164(raw) {
+  const digits = raw.replace(/\D/g, '')
+  if (digits.length === 10) return `+1${digits}`
+  if (digits.length === 11 && digits[0] === '1') return `+${digits}`
+  return ''
+}
+
+function formatPhoneDisplay(e164) {
+  if (!e164) return ''
+  const digits = e164.replace(/\D/g, '')
+  if (digits.length === 11 && digits[0] === '1') {
+    return `(${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`
+  }
+  return e164
+}
+
 // ── Save Button ───────────────────────────────────────────────────────────────
 
 function SaveButton({ saving, saved }) {
@@ -100,6 +116,12 @@ export function SettingsPage() {
   const [savingReview, setSavingReview] = useState(false)
   const [savedReview,  setSavedReview]  = useState(false)
 
+  // SMS Commands
+  const [operatorPhone,    setOperatorPhone]    = useState('')
+  const [truckPhone,       setTruckPhone]       = useState('')
+  const [savingPhone,      setSavingPhone]      = useState(false)
+  const [savedPhone,       setSavedPhone]       = useState(false)
+
   useEffect(() => {
     if (vendor) loadVendor()
   }, [vendor])
@@ -108,7 +130,7 @@ export function SettingsPage() {
     setLoading(true)
     const { data } = await supabase
       .from('vendors')
-      .select('name, description, logo_url, notification_time, timezone, sentiment_delay_hours, google_review_url')
+      .select('name, description, logo_url, notification_time, timezone, sentiment_delay_hours, google_review_url, operator_phone_number, twilio_phone_number')
       .eq('id', vendor.id)
       .single()
 
@@ -121,6 +143,8 @@ export function SettingsPage() {
       setTimezone(data.timezone ?? 'America/Phoenix')
       setSentimentDelay(data.sentiment_delay_hours ?? 2)
       setReviewUrl(data.google_review_url ?? '')
+      setTruckPhone(data.twilio_phone_number ?? '')
+      setOperatorPhone(formatPhoneDisplay(data.operator_phone_number ?? ''))
     }
     setLoading(false)
   }
@@ -193,6 +217,22 @@ export function SettingsPage() {
     setSavingReview(false)
     setSavedReview(true)
     setTimeout(() => setSavedReview(false), 3000)
+  }
+
+  async function savePhone(e) {
+    e.preventDefault()
+    const e164 = toE164(operatorPhone)
+    if (operatorPhone.trim() && !e164) return
+    setSavingPhone(true)
+    setSavedPhone(false)
+
+    await supabase.from('vendors').update({
+      operator_phone_number: e164 || null,
+    }).eq('id', vendor.id)
+
+    setSavingPhone(false)
+    setSavedPhone(true)
+    setTimeout(() => setSavedPhone(false), 3000)
   }
 
   if (loading) {
@@ -349,6 +389,58 @@ export function SettingsPage() {
             </Field>
 
             <SaveButton saving={savingReview} saved={savedReview} />
+          </form>
+        </Section>
+
+        {/* ── SMS Commands ─────────────────────────────────────────────────────── */}
+        <Section
+          title="SMS Commands"
+          description="Text your truck number to add locations — no webapp needed."
+        >
+          <form onSubmit={savePhone} className="flex flex-col gap-5">
+
+            {/* How it works callout */}
+            <div className="bg-accent-muted border border-accent/20 rounded-lg px-4 py-3 flex flex-col gap-1">
+              <p className="text-text-primary font-body text-sm font-medium">How it works</p>
+              <p className="text-text-secondary font-body text-xs leading-relaxed">
+                Text your truck's number from your mobile and Rollout adds the location automatically.
+                No login, no form — just a quick text from the parking lot.
+              </p>
+              <div className="mt-2 font-mono text-xs text-text-secondary space-y-0.5">
+                <p><span className="text-accent font-medium">Add location:</span> Downtown Plaza 11am-2pm</p>
+                <p><span className="text-accent font-medium">Multiple stops:</span> send a second text</p>
+                <p><span className="text-accent font-medium">Check today:</span> STATUS</p>
+                <p><span className="text-accent font-medium">All commands:</span> HELP</p>
+              </div>
+            </div>
+
+            {/* Truck phone (read-only) */}
+            {truckPhone && (
+              <Field label="Your truck's number" hint="text this number">
+                <input
+                  type="text"
+                  value={formatPhoneDisplay(truckPhone)}
+                  readOnly
+                  className={inputClass + ' opacity-60 cursor-default select-all'}
+                />
+              </Field>
+            )}
+
+            {/* Operator mobile */}
+            <Field label="Your mobile number" hint="the phone you'll text from">
+              <input
+                type="tel"
+                value={operatorPhone}
+                onChange={e => setOperatorPhone(e.target.value)}
+                placeholder="(555) 123-4567"
+                className={inputClass}
+              />
+              <p className="text-text-tertiary font-body text-xs mt-1.5">
+                Only texts from this number are treated as operator commands. Customers are unaffected.
+              </p>
+            </Field>
+
+            <SaveButton saving={savingPhone} saved={savedPhone} />
           </form>
         </Section>
 

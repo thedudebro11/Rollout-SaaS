@@ -27,6 +27,162 @@ function twimlEmpty(): string {
 
 const XML = { 'Content-Type': 'text/xml' }
 
+// ── Operator command handler ───────────────────────────────────────────────────
+
+// Returns today's date in YYYY-MM-DD in the vendor's timezone.
+function todayInTz(timezone: string): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: timezone })
+}
+
+// Parses "11am", "11:30am", "2pm", "2:30pm" → "HH:MM" 24h string or null.
+function parseTime(raw: string): string | null {
+  const m = raw.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i)
+  if (!m) return null
+  let h = parseInt(m[1], 10)
+  const min = m[2] ? parseInt(m[2], 10) : 0
+  const period = m[3].toLowerCase()
+  if (period === 'am' && h === 12) h = 0
+  if (period === 'pm' && h !== 12) h += 12
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`
+}
+
+// Extracts the first two time tokens from a string.
+// Returns { start, end, remaining } where remaining is the string with times removed.
+function extractTimes(body: string): { start: string; end: string; remaining: string } | null {
+  // Match patterns like: 11am, 11:30am, 2pm — with optional dash/space separator between pairs
+  const timeRe = /\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/gi
+  const matches = [...body.matchAll(timeRe)]
+  if (matches.length < 2) return null
+
+  const start = parseTime(matches[0][1])
+  const end   = parseTime(matches[1][1])
+  if (!start || !end) return null
+
+  // Remove the matched time tokens (and any separator between them) from the body
+  let remaining = body
+  // Remove from last match first to preserve indices
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const idx = matches[i].index!
+    const len = matches[i][0].length
+    remaining = remaining.slice(0, idx) + remaining.slice(idx + len)
+  }
+  // Clean up leftover separators (dashes, "to", extra spaces)
+  remaining = remaining.replace(/\s*[-–]\s*|\bto\b/gi, ' ').replace(/\s+/g, ' ').trim()
+
+  return { start, end, remaining }
+}
+
+// Forward geocode an address string via OpenStreetMap Nominatim.
+// Returns { lat, lng } or null on failure.
+async function geocode(address: string): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`
+    const res  = await fetch(url, { headers: { 'User-Agent': 'Rollout-SaaS/1.0' } })
+    const data = await res.json()
+    if (!data?.[0]) return null
+    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) }
+  } catch {
+    return null
+  }
+}
+
+async function handleOperatorCommand(body: string, vendor: any, db: any): Promise<Response> {
+  const cmd = body.trim().toUpperCase()
+  console.log(`[OP] command from operator: "${body}"`)
+
+  // ── HELP ──────────────────────────────────────────────────────────────────
+  if (cmd === 'HELP') {
+    const reply = [
+      'Rollout commands:',
+      '• [address] [start]-[end] — add today\'s location',
+      '  e.g. Downtown Plaza 11am-2pm',
+      '• STATUS — today\'s schedule + subscriber count',
+      '• HELP — show this list',
+    ].join('\n')
+    return new Response(twiml(reply), { status: 200, headers: XML })
+  }
+
+  // ── STATUS ────────────────────────────────────────────────────────────────
+  if (cmd === 'STATUS') {
+    const today = todayInTz(vendor.timezone ?? 'America/Chicago')
+
+    const [{ data: locs }, { count: subCount }] = await Promise.all([
+      db.from('locations')
+        .select('address, start_time, end_time')
+        .eq('vendor_id', vendor.id)
+        .eq('date', today)
+        .order('start_time'),
+      db.from('subscribers')
+        .select('*', { count: 'exact', head: true })
+        .eq('vendor_id', vendor.id)
+        .eq('is_active', true),
+    ])
+
+    let reply: string
+    if (!locs || locs.length === 0) {
+      reply = `No stops scheduled for today.\n\nActive subscribers: ${subCount ?? 0}\n\nText "[address] [start]-[end]" to add a stop.`
+    } else {
+      const stopLines = locs.map(l => {
+        const fmt = (t: string) => {
+          const [h, m] = t.split(':').map(Number)
+          const ap = h >= 12 ? 'pm' : 'am'
+          const hr = h % 12 || 12
+          return m === 0 ? `${hr}${ap}` : `${hr}:${String(m).padStart(2, '0')}${ap}`
+        }
+        return `• ${l.address}, ${fmt(l.start_time)}–${fmt(l.end_time)}`
+      }).join('\n')
+      reply = `Today's stops:\n${stopLines}\n\nActive subscribers: ${subCount ?? 0}`
+    }
+    return new Response(twiml(reply), { status: 200, headers: XML })
+  }
+
+  // ── Location entry ────────────────────────────────────────────────────────
+  const parsed = extractTimes(body)
+  if (!parsed) {
+    const reply = `Couldn't read the times. Try:\n\nDowntown Plaza 11am-2pm\n\nReply HELP for all commands.`
+    return new Response(twiml(reply), { status: 200, headers: XML })
+  }
+
+  const { start, end, remaining: address } = parsed
+  if (!address) {
+    const reply = `Got the times but couldn't read the address. Try:\n\nDowntown Plaza 11am-2pm`
+    return new Response(twiml(reply), { status: 200, headers: XML })
+  }
+
+  const today = todayInTz(vendor.timezone ?? 'America/Chicago')
+
+  // Geocode in the background — don't block the reply on it
+  const coords = await geocode(address)
+
+  const { error: insertErr } = await db.from('locations').insert({
+    vendor_id:  vendor.id,
+    address:    address,
+    date:       today,
+    start_time: start,
+    end_time:   end,
+    lat:        coords?.lat ?? null,
+    lng:        coords?.lng ?? null,
+  })
+
+  if (insertErr) {
+    console.error('[OP] location insert failed:', insertErr.message)
+    const reply = `Something went wrong saving that location. Try again or add it in the app.`
+    return new Response(twiml(reply), { status: 200, headers: XML })
+  }
+
+  // Format times for confirmation reply
+  const fmtTime = (t: string) => {
+    const [h, m] = t.split(':').map(Number)
+    const ap = h >= 12 ? 'pm' : 'am'
+    const hr = h % 12 || 12
+    return m === 0 ? `${hr}${ap}` : `${hr}:${String(m).padStart(2, '0')}${ap}`
+  }
+
+  const reply = `Got it! Added for today:\n${address}\n${fmtTime(start)} – ${fmtTime(end)}\n\nSend another text to add a second stop.`
+  console.log(`[OP] location added: ${address} ${start}–${end} on ${today}`)
+  return new Response(twiml(reply), { status: 200, headers: XML })
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -59,7 +215,7 @@ Deno.serve(async (req: Request) => {
     // ── [CP3] Look up vendor by To number ────────────────────────────────────
     const { data: vendor, error: vendorErr } = await db
       .from('vendors')
-      .select('id, name, google_review_url')
+      .select('id, name, google_review_url, operator_phone_number, timezone')
       .eq('twilio_phone_number', to)
       .eq('onboarding_complete', true)
       .single()
@@ -111,6 +267,12 @@ Deno.serve(async (req: Request) => {
 
       const reply = `Welcome back! You're subscribed to ${vendor.name} location updates again.`
       return new Response(twiml(reply), { status: 200, headers: XML })
+    }
+
+    // ── [CP4b] Operator command — checked before subscriber lookup ────────────
+    if (vendor.operator_phone_number && from === vendor.operator_phone_number) {
+      console.log(`[CP4b] operator command from ${from}`)
+      return handleOperatorCommand(body, vendor, db)
     }
 
     // ── [CP5] Look up subscriber ──────────────────────────────────────────────

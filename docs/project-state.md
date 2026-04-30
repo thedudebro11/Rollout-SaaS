@@ -580,5 +580,82 @@ Twilio is configured to POST inbound SMS to:
 ### Nice to have
 - Landing/marketing page explaining Rollout to new operators
 - Recurring location expansion (`is_recurring` stored but not auto-expanded)
-- Multi-truck support (Fleet plan — schema ready, UI not built)
 - Email notifications as fallback to SMS
+
+---
+
+## 13. V2 Roadmap — Direction
+
+**Core principle for V2:** Make the operator's daily input as close to zero friction as possible. The current system requires opening a webapp to enter locations — that habit breaks under a busy morning. V2 eliminates that by letting operators text their own Twilio number to manage everything.
+
+---
+
+### Phase 1 — SMS Location Entry (no schema changes required)
+
+**The problem:** Operators must open the webapp daily to enter locations. If they forget, morning SMS fires with nothing to send and subscribers get silence.
+
+**The solution:** Operator texts their own provisioned Twilio number. The `twilio-inbound` edge function already receives all inbound SMS. Add a check at the top: if `From` matches any `vendors.twilio_phone_number`, treat the message as an operator command instead of routing it to the subscriber state machine.
+
+**Parse format (natural language, today's date assumed):**
+```
+"Downtown Plaza 11am-2pm"       → creates location for today
+"1st & Main 10am 1pm"           → creates location for today
+"Riverside Park 5pm-8pm tacos"  → creates location, notes = "tacos"
+```
+
+**Parsing approach:**
+1. Extract time range with regex (handles `11am-2pm`, `11am 2pm`, `11:00-14:00`)
+2. Remaining text after stripping times = address candidate
+3. Geocode address via OpenStreetMap Nominatim (same as the web form)
+4. Insert into `locations` with `vendor_id`, `date = today`, `address`, `lat`, `lng`, `start_time`, `end_time`, `notes`
+5. Reply: `"Got it! Downtown Plaza, 11:00 AM–2:00 PM added for today."`
+6. If parsing fails, reply: `"Couldn't parse that. Try: [address] [start time]-[end time]"`
+
+**Operator commands to support:**
+| Text | Action |
+|---|---|
+| `[address] [time]-[time]` | Add location for today |
+| `STATUS` | Reply with today's scheduled stops + subscriber count |
+| `HELP` | Reply with command list |
+
+**Changes needed:**
+- `supabase/functions/twilio-inbound/index.ts` — add operator detection at top, route to `handleOperatorCommand()`
+- No DB migrations required
+- No frontend changes required
+
+**Risk:** Operator's phone number must be stored somewhere to match against. Currently `vendors` table has `twilio_phone_number` (the provisioned number) but NOT the operator's personal mobile. Need to add `operator_phone_number` column to `vendors` and capture it during onboarding (or settings).
+
+---
+
+### Phase 2 — Fleet Support (schema change required)
+
+**The problem:** Current schema assumes 1 user = 1 truck. Fleet operators (multiple trucks) need one account, multiple trucks, each with its own Twilio number, subscriber list, QR code, and location schedule.
+
+**Architecture decision — parent/child vendors (preferred for V2):**
+
+Rather than a full schema rewrite, add a `parent_vendor_id` to `vendors`. A fleet account has one "parent" vendor (holds billing, user prefs) and N "child" vendor rows (each is a truck with its own Twilio number and data).
+
+```
+vendors row (parent) — user_id, billing, account settings
+  └── vendors row (child truck 1) — parent_vendor_id, twilio_phone_number, slug, subscribers, locations
+  └── vendors row (child truck 2) — parent_vendor_id, twilio_phone_number, slug, subscribers, locations
+```
+
+Solo operators: no change. Their vendor row has `parent_vendor_id = null`.
+
+**Why not a separate `trucks` table:** Would require migrating every FK across `subscribers`, `locations`, `sms_log`, `conversations`, `conversation_messages`, `subscriber_sms_state`, `sentiment_responses`. The parent/child approach reuses the existing schema with a single nullable column added.
+
+**Migration needed:**
+```sql
+ALTER TABLE vendors ADD COLUMN parent_vendor_id uuid REFERENCES vendors(id);
+CREATE INDEX ON vendors(parent_vendor_id);
+```
+
+**UI changes needed:**
+- Sidebar truck selector (dropdown to switch active truck context)
+- "Add Truck" flow in settings (provisions a new Twilio number, creates child vendor row)
+- All dashboard/locations/subscribers/inbox pages already work — they just need to read the selected truck's `vendor_id` instead of the user's primary vendor
+
+**Billing gating:** Fleet plan ($99) = up to 5 trucks. Check `parent_vendor_id` count before allowing "Add Truck". Already a plan tier — no Stripe changes needed.
+
+**Build order:** Phase 1 first. Phase 2 starts after Phase 1 is live and validated with real operators.

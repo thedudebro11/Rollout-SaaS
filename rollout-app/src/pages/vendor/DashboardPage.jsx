@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users, MapPin, MessageSquare, Smile, Clock, TrendingUp, Loader2, Plus } from 'lucide-react'
+import { Users, MapPin, MessageSquare, Smile, Clock, TrendingUp, Loader2, Plus, QrCode } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../contexts/AuthContext'
@@ -18,6 +18,37 @@ function todayISO() {
 function startOfMonthISO() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+function weekAgoISO() {
+  const d = new Date()
+  d.setDate(d.getDate() - 7)
+  return d.toISOString()
+}
+
+// (480) 867-••09 — area code + exchange visible, last 4 partially masked
+function maskPhone(e164) {
+  const digits = (e164 ?? '').replace(/\D/g, '')
+  if (digits.length === 11 && digits[0] === '1') {
+    const area = digits.slice(1, 4)
+    const exch = digits.slice(4, 7)
+    const last = digits.slice(9, 11)
+    return `(${area}) ${exch}-••${last}`
+  }
+  return e164 ?? ''
+}
+
+function timeAgo(iso) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins  = Math.floor(diff / 60_000)
+  const hrs   = Math.floor(mins / 60)
+  const days  = Math.floor(hrs / 24)
+  if (mins < 2)  return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  if (hrs < 24)  return `${hrs}h ago`
+  if (days === 1) return 'yesterday'
+  if (days < 7)  return `${days}d ago`
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 function formatTime(t) {
@@ -82,41 +113,29 @@ function TodayLocationCard({ loc }) {
   )
 }
 
-// ── Recent SMS Row ────────────────────────────────────────────────────────────
+// ── Recent Subscriber Row ─────────────────────────────────────────────────────
 
-const TYPE_LABELS = {
-  location_notify:  'Morning SMS',
-  sentiment_ask:    'Sentiment ask',
-  sentiment_happy:  'Happy reply',
-  sentiment_unhappy:'Unhappy reply',
-  opt_in_confirm:   'Opt-in confirm',
-  idle_reply:       'Customer reply',
-  vendor_reply:     'Your reply',
-  other:            'SMS',
-}
-
-function RecentSmsRow({ entry }) {
-  const label = TYPE_LABELS[entry.message_type] ?? 'SMS'
-  const time  = new Date(entry.created_at).toLocaleTimeString('en-US', {
-    hour:   'numeric',
-    minute: '2-digit',
-    hour12: true,
-  })
-  const date = new Date(entry.created_at).toLocaleDateString('en-US', {
-    month: 'short',
-    day:   'numeric',
-  })
-
+function RecentSubscriberRow({ sub }) {
   return (
-    <div className="flex items-center gap-3 py-2.5 border-b border-border last:border-0">
-      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${entry.direction === 'inbound' ? 'bg-accent' : 'bg-success'}`} />
-      <div className="flex-1 min-w-0">
-        <p className="text-text-primary font-body text-sm truncate">{entry.message_body}</p>
-        <p className="text-text-tertiary font-body text-xs mt-0.5">{label}</p>
+    <div className="flex items-center gap-3 py-3 border-b border-border last:border-0">
+      <div className="w-8 h-8 rounded-full bg-accent-muted flex items-center justify-center flex-shrink-0">
+        <Users size={14} className="text-accent" />
       </div>
-      <p className="text-text-tertiary font-body text-xs flex-shrink-0 text-right">
-        {date}<br />{time}
-      </p>
+      <div className="flex-1 min-w-0">
+        <p className="text-text-primary font-body text-sm font-medium font-mono tracking-wide">
+          {maskPhone(sub.phone_number)}
+        </p>
+        <p className="text-text-tertiary font-body text-xs mt-0.5">
+          {timeAgo(sub.opted_in_at)}
+        </p>
+      </div>
+      <span className={`text-[10px] font-body font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
+        sub.is_active
+          ? 'text-success bg-success-muted'
+          : 'text-text-tertiary bg-surface-raised'
+      }`}>
+        {sub.is_active ? 'Active' : 'Opted out'}
+      </span>
     </div>
   )
 }
@@ -126,12 +145,13 @@ function RecentSmsRow({ entry }) {
 export function DashboardPage() {
   const { vendor } = useAuth()
 
-  const [loading, setLoading]           = useState(true)
-  const [subscriberCount, setSubscriberCount] = useState(0)
-  const [todayLocations, setTodayLocations]   = useState([])
-  const [smsThisMonth, setSmsThisMonth]       = useState(0)
-  const [sentiment, setSentiment]             = useState({ happy: 0, unhappy: 0 })
-  const [recentSms, setRecentSms]             = useState([])
+  const [loading, setLoading]                   = useState(true)
+  const [subscriberCount, setSubscriberCount]   = useState(0)
+  const [newThisWeek, setNewThisWeek]           = useState(0)
+  const [todayLocations, setTodayLocations]     = useState([])
+  const [smsThisMonth, setSmsThisMonth]         = useState(0)
+  const [sentiment, setSentiment]               = useState({ happy: 0, unhappy: 0 })
+  const [recentSubscribers, setRecentSubscribers] = useState([])
 
   useEffect(() => {
     if (vendor) loadDashboard()
@@ -145,10 +165,11 @@ export function DashboardPage() {
 
     const [
       { count: subCount },
+      { count: weekCount },
       { data: locations },
       { count: smsCount },
       { data: sentimentData },
-      { data: recentData },
+      { data: recentSubData },
     ] = await Promise.all([
       // Active subscriber count
       supabase
@@ -156,6 +177,13 @@ export function DashboardPage() {
         .select('*', { count: 'exact', head: true })
         .eq('vendor_id', vendor.id)
         .eq('is_active', true),
+
+      // New subscribers this week
+      supabase
+        .from('subscribers')
+        .select('*', { count: 'exact', head: true })
+        .eq('vendor_id', vendor.id)
+        .gte('opted_in_at', weekAgoISO()),
 
       // Today's locations
       supabase
@@ -179,16 +207,17 @@ export function DashboardPage() {
         .select('response')
         .eq('vendor_id', vendor.id),
 
-      // Recent SMS log (last 5)
+      // Last 5 subscribers (proof feed)
       supabase
-        .from('sms_log')
-        .select('id, message_body, message_type, direction, created_at')
+        .from('subscribers')
+        .select('id, phone_number, opted_in_at, is_active')
         .eq('vendor_id', vendor.id)
-        .order('created_at', { ascending: false })
+        .order('opted_in_at', { ascending: false })
         .limit(5),
     ])
 
     setSubscriberCount(subCount ?? 0)
+    setNewThisWeek(weekCount ?? 0)
     setTodayLocations(locations ?? [])
     setSmsThisMonth(smsCount ?? 0)
 
@@ -196,7 +225,7 @@ export function DashboardPage() {
     const unhappy = (sentimentData ?? []).filter(r => r.response === 'unhappy').length
     setSentiment({ happy, unhappy })
 
-    setRecentSms(recentData ?? [])
+    setRecentSubscribers(recentSubData ?? [])
     setLoading(false)
   }
 
@@ -232,6 +261,7 @@ export function DashboardPage() {
           icon={Users}
           label="Active subscribers"
           value={subscriberCount}
+          sub={newThisWeek > 0 ? `↑ ${newThisWeek} new this week` : undefined}
           accent
         />
         <StatCard
@@ -293,25 +323,38 @@ export function DashboardPage() {
           )}
         </div>
 
-        {/* Recent Activity */}
+        {/* Recent Subscribers */}
         <div className="bg-surface border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <TrendingUp size={16} className="text-text-secondary" />
-              <h2 className="font-display font-bold text-base text-text-primary">Recent Activity</h2>
+              <h2 className="font-display font-bold text-base text-text-primary">Recent Subscribers</h2>
             </div>
+            <Link
+              to="/subscribers"
+              className="text-xs font-body font-medium text-accent hover:text-accent-hover transition-colors"
+            >
+              View all →
+            </Link>
           </div>
 
-          {recentSms.length === 0 ? (
+          {recentSubscribers.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-text-secondary font-body text-sm">
-                No SMS activity yet.
+              <p className="text-text-secondary font-body text-sm mb-3">
+                No subscribers yet.
               </p>
+              <Link
+                to="/qr-code"
+                className="inline-flex items-center gap-1.5 text-sm font-body font-medium text-accent hover:text-accent-hover transition-colors"
+              >
+                <QrCode size={14} />
+                Get your QR code
+              </Link>
             </div>
           ) : (
             <div>
-              {recentSms.map(entry => (
-                <RecentSmsRow key={entry.id} entry={entry} />
+              {recentSubscribers.map(sub => (
+                <RecentSubscriberRow key={sub.id} sub={sub} />
               ))}
             </div>
           )}
