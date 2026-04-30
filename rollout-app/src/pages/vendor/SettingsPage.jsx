@@ -165,7 +165,7 @@ export function SettingsPage() {
 
     if (logoFile) {
       const ext  = logoFile.name.split('.').pop()
-      const path = `${vendor.id}/logo.${ext}`
+      const path = `${vendor.user_id}/logo.${ext}`
       const { error: uploadErr } = await supabase.storage
         .from('vendor-logos')
         .upload(path, logoFile, { upsert: true })
@@ -173,6 +173,8 @@ export function SettingsPage() {
       if (!uploadErr) {
         const { data: urlData } = supabase.storage.from('vendor-logos').getPublicUrl(path)
         uploadedUrl = urlData.publicUrl
+      } else {
+        console.error('Logo upload failed:', uploadErr.message)
       }
     }
 
