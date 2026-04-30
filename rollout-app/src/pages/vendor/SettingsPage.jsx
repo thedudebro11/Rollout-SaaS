@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Loader2, Save, Upload, Check } from 'lucide-react'
+import { Loader2, Save, Upload, Check, AlertCircle } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -90,7 +90,7 @@ function SaveButton({ saving, saved }) {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const { vendor } = useAuth()
+  const { vendor, refreshVendor } = useAuth()
   const fileInputRef = useRef(null)
 
   const [loading, setLoading] = useState(true)
@@ -101,6 +101,7 @@ export function SettingsPage() {
   const [logoUrl,     setLogoUrl]     = useState('')
   const [logoFile,    setLogoFile]    = useState(null)
   const [logoPreview, setLogoPreview] = useState('')
+  const [logoError,   setLogoError]   = useState('')
   const [savingTruck, setSavingTruck] = useState(false)
   const [savedTruck,  setSavedTruck]  = useState(false)
 
@@ -160,20 +161,23 @@ export function SettingsPage() {
     e.preventDefault()
     setSavingTruck(true)
     setSavedTruck(false)
+    setLogoError('')
 
     let uploadedUrl = logoUrl
 
     if (logoFile) {
       const ext  = logoFile.name.split('.').pop()
-      const path = `${vendor.user_id}/logo.${ext}`
+      // Unique filename avoids needing UPDATE/DELETE storage policies
+      const path = `${vendor.user_id}/logo-${Date.now()}.${ext}`
       const { error: uploadErr } = await supabase.storage
         .from('vendor-logos')
-        .upload(path, logoFile, { upsert: true })
+        .upload(path, logoFile)
 
       if (!uploadErr) {
         const { data: urlData } = supabase.storage.from('vendor-logos').getPublicUrl(path)
         uploadedUrl = urlData.publicUrl
       } else {
+        setLogoError('Logo upload failed — check that the file is under 2MB.')
         console.error('Logo upload failed:', uploadErr.message)
       }
     }
@@ -188,6 +192,7 @@ export function SettingsPage() {
     setLogoFile(null)
     setSavingTruck(false)
     setSavedTruck(true)
+    await refreshVendor()
     setTimeout(() => setSavedTruck(false), 3000)
   }
 
@@ -315,6 +320,12 @@ export function SettingsPage() {
               />
             </Field>
 
+            {logoError && (
+              <div className="flex items-center gap-2 text-red-500 font-body text-sm">
+                <AlertCircle size={14} />
+                {logoError}
+              </div>
+            )}
             <SaveButton saving={savingTruck} saved={savedTruck} />
           </form>
         </Section>
