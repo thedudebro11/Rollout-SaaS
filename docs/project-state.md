@@ -367,6 +367,7 @@ All tables live in `public` schema with RLS enabled. Applied via `supabase/migra
 | `003_public_locations_read.sql` | Public SELECT policy on locations (needed for public schedule page) |
 | `004_stripe_price_ids.sql` | Links Stripe monthly price IDs to seeded plans |
 | `005_live_location.sql` | Adds live location columns to vendors + enables Realtime on vendors table |
+| `006_operator_phone.sql` | Adds `operator_phone_number` to vendors — enables SMS location entry |
 
 ### Tables
 
@@ -391,6 +392,7 @@ All tables live in `public` schema with RLS enabled. Applied via `supabase/migra
 | `live_lng` | double precision | current GPS longitude |
 | `live_address` | text | reverse-geocoded street address |
 | `live_updated_at` | timestamptz | last ping time — used for staleness check |
+| `operator_phone_number` | text | E.164 operator mobile — SMS commands from this number are routed to the operator handler, not the subscriber state machine |
 
 #### `subscribers`
 | Column | Type | Notes |
@@ -468,7 +470,7 @@ All functions have `verify_jwt = false` in `config.toml`. Authenticated function
 | `onboarding-complete` | Authenticated | Sets `onboarding_complete = true`, provisions Twilio number |
 | `subscriber-optin` | Public | Creates subscriber + SMS state row, sends confirmation SMS |
 | `send-morning-sms` | Cron (secret) | Sends daily location SMS to all active subscribers |
-| `twilio-inbound` | Public (Twilio webhook) | Routes inbound SMS by state machine |
+| `twilio-inbound` | Public (Twilio webhook) | Routes inbound SMS — operator commands (CP4b) or subscriber state machine |
 | `send-sentiment-sms` | Cron (secret) | Sends post-visit sentiment ask SMS |
 | `vendor-reply` | Authenticated | Sends vendor reply SMS, persists to conversation thread |
 | `create-checkout-session` | Authenticated | Creates Stripe Checkout session for plan upgrade |
@@ -590,7 +592,7 @@ Twilio is configured to POST inbound SMS to:
 
 ---
 
-### Phase 1 — SMS Location Entry (no schema changes required)
+### Phase 1 — SMS Location Entry ✅ Complete
 
 **The problem:** Operators must open the webapp daily to enter locations. If they forget, morning SMS fires with nothing to send and subscribers get silence.
 
