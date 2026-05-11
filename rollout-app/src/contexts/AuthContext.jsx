@@ -33,7 +33,10 @@ export function AuthProvider({ children }) {
         .select('*')
         .eq('user_id', userId)
         .single()
+        .abortSignal(AbortSignal.timeout(8000))
       setVendor(data)
+    } catch {
+      setVendor(null)
     } finally {
       setVendorLoading(false)
     }
