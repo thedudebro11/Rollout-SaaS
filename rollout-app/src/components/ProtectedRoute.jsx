@@ -13,16 +13,16 @@ function LoadingScreen() {
   )
 }
 
-// Protects all routes inside AppLayout — redirects to /login if not authenticated
+// Protects all routes inside AppLayout.
+// Renders the outlet immediately so the page skeleton is visible during auth resolution —
+// this is what allows LCP to fire on the skeleton rather than waiting for Supabase.
+// We only redirect once we are certain (loading=false) there is no session.
 export function ProtectedRoute() {
   const { session, loading, vendor } = useAuth()
 
-  if (loading) return <LoadingScreen />
-  if (!session) return <Navigate to="/login" replace />
+  if (!loading && !session) return <Navigate to="/login" replace />
 
-  // If authenticated but onboarding not done, redirect to onboarding
-  // (allow /onboarding itself to render)
-  if (vendor && !vendor.onboarding_complete) {
+  if (!loading && vendor && !vendor.onboarding_complete) {
     const currentPath = window.location.pathname
     if (currentPath !== '/onboarding') {
       return <Navigate to="/onboarding" replace />

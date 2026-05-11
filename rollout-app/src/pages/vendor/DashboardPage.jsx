@@ -343,7 +343,7 @@ function OpenConversationsCard({ conversations, loading }) {
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
-  const { vendor } = useAuth()
+  const { vendor, loading: authLoading } = useAuth()
 
   const [loading, setLoading]                     = useState(true)
   const [subscriberCount, setSubscriberCount]     = useState(0)
@@ -356,6 +356,9 @@ export function DashboardPage() {
   const [openConversations, setOpenConversations] = useState([])
 
   const weekDays = getCurrentWeekDays()
+
+  // isLoading covers both: auth still resolving (authLoading) and data fetching (loading)
+  const isLoading = authLoading || loading
 
   useEffect(() => {
     if (vendor) loadDashboard()
@@ -487,7 +490,7 @@ export function DashboardPage() {
       </div>
 
       {/* Stat Cards */}
-      {loading ? (
+      {isLoading ? (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)}
         </div>
@@ -539,11 +542,11 @@ export function DashboardPage() {
       </div>
 
       {/* 7-Day Schedule Strip */}
-      <WeekStrip weekDays={weekDays} weekLocations={weekLocations} loading={loading} />
+      <WeekStrip weekDays={weekDays} weekLocations={weekLocations} loading={isLoading} />
 
       {/* Open Conversations */}
       <div className="mb-6">
-        <OpenConversationsCard conversations={openConversations} loading={loading} />
+        <OpenConversationsCard conversations={openConversations} loading={isLoading} />
       </div>
 
       {/* Two-column layout */}
@@ -564,7 +567,7 @@ export function DashboardPage() {
             </Link>
           </div>
 
-          {loading ? (
+          {isLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 2 }).map((_, i) => (
                 <div key={i} className="flex items-start gap-3 py-3 border-b border-border last:border-0 animate-pulse">
@@ -613,7 +616,7 @@ export function DashboardPage() {
             </Link>
           </div>
 
-          {loading ? (
+          {isLoading ? (
             <div className="space-y-1">
               {Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="flex items-center gap-3 py-3 border-b border-border last:border-0 animate-pulse">
