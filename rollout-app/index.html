@@ -13,7 +13,14 @@
     <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=optional" /></noscript>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Inline loading state — gives FCP before JS downloads/parses.
+         React replaces this when it mounts; dimensions match LoadingScreen to avoid CLS. -->
+    <div id="root">
+      <div style="min-height:100vh;background:#0a0a0a;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px">
+        <div style="width:40px;height:40px;border-radius:50%;background:#FF6B35;opacity:0.85"></div>
+        <span style="color:#888888;font-size:14px;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif">Loading…</span>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

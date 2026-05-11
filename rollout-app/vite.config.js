@@ -8,6 +8,12 @@ export default defineConfig({
     tailwindcss(),
   ],
   build: {
+    // Only preload chunks needed on every page — exclude heavy lazy-only chunks
+    // so the browser doesn't fetch recharts/jspdf on dashboard load.
+    modulePreload: {
+      resolveDependencies: (_url, deps) =>
+        deps.filter(dep => !dep.includes('vendor-pdf') && !dep.includes('vendor-charts')),
+    },
     rollupOptions: {
       output: {
         manualChunks(id) {
