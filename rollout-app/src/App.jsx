@@ -1,36 +1,40 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import { ProtectedRoute, PublicOnlyRoute } from './components/ProtectedRoute'
 import { AppLayout } from './layouts/AppLayout'
 
-// Landing page
-import { LandingPage } from './pages/LandingPage'
+// Helper: unwrap named export for React.lazy (which requires a default export)
+const lazyNamed = (importer, name) =>
+  lazy(() => importer().then(m => ({ default: m[name] })))
 
-// Auth pages
-import { SignupPage }         from './pages/auth/SignupPage'
-import { LoginPage }          from './pages/auth/LoginPage'
-import { ForgotPasswordPage }  from './pages/auth/ForgotPasswordPage'
-import { ResetPasswordPage }   from './pages/auth/ResetPasswordPage'
+const LandingPage        = lazyNamed(() => import('./pages/LandingPage'),                   'LandingPage')
+const SignupPage         = lazyNamed(() => import('./pages/auth/SignupPage'),               'SignupPage')
+const LoginPage          = lazyNamed(() => import('./pages/auth/LoginPage'),                'LoginPage')
+const ForgotPasswordPage = lazyNamed(() => import('./pages/auth/ForgotPasswordPage'),      'ForgotPasswordPage')
+const ResetPasswordPage  = lazyNamed(() => import('./pages/auth/ResetPasswordPage'),       'ResetPasswordPage')
+const OnboardingPage     = lazyNamed(() => import('./pages/vendor/OnboardingPage'),         'OnboardingPage')
+const DashboardPage      = lazyNamed(() => import('./pages/vendor/DashboardPage'),          'DashboardPage')
+const LocationsPage      = lazyNamed(() => import('./pages/vendor/LocationsPage'),          'LocationsPage')
+const InboxPage          = lazyNamed(() => import('./pages/vendor/InboxPage'),              'InboxPage')
+const SubscribersPage    = lazyNamed(() => import('./pages/vendor/SubscribersPage'),        'SubscribersPage')
+const AnalyticsPage      = lazyNamed(() => import('./pages/vendor/AnalyticsPage'),          'AnalyticsPage')
+const QRCodePage         = lazyNamed(() => import('./pages/vendor/QRCodePage'),             'QRCodePage')
+const SettingsPage       = lazyNamed(() => import('./pages/vendor/SettingsPage'),           'SettingsPage')
+const BillingPage        = lazyNamed(() => import('./pages/vendor/BillingPage'),            'BillingPage')
+const OptInPage          = lazyNamed(() => import('./pages/customer/OptInPage'),            'OptInPage')
+const PublicSchedulePage = lazyNamed(() => import('./pages/customer/PublicSchedulePage'),   'PublicSchedulePage')
 
-// Vendor pages
-import { OnboardingPage }   from './pages/vendor/OnboardingPage'
-import { DashboardPage }    from './pages/vendor/DashboardPage'
-import { LocationsPage }    from './pages/vendor/LocationsPage'
-import { InboxPage }        from './pages/vendor/InboxPage'
-import { SubscribersPage }  from './pages/vendor/SubscribersPage'
-import { AnalyticsPage }    from './pages/vendor/AnalyticsPage'
-import { QRCodePage }       from './pages/vendor/QRCodePage'
-import { SettingsPage }     from './pages/vendor/SettingsPage'
-import { BillingPage }      from './pages/vendor/BillingPage'
-
-// Customer pages (public, no auth)
-import { OptInPage }          from './pages/customer/OptInPage'
-import { PublicSchedulePage } from './pages/customer/PublicSchedulePage'
+// Minimal dark fallback shown while a lazy chunk loads (matches app background)
+function PageFallback() {
+  return <div style={{ minHeight: '100vh', background: '#0a0a0a' }} />
+}
 
 export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <Suspense fallback={<PageFallback />}>
         <Routes>
           {/* Public customer-facing routes — no auth, light theme */}
           <Route path="/join/:slug" element={<OptInPage />} />
@@ -67,6 +71,7 @@ export default function App() {
           {/* Public vendor schedule page — must be last to avoid catching /login etc */}
           <Route path="/:slug" element={<PublicSchedulePage />} />
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </AuthProvider>
   )
