@@ -50,7 +50,8 @@ export function AuthProvider({ children }) {
   }
 
   async function signOut() {
-    await supabase.auth.signOut()
+    await supabase.auth.signOut({ scope: 'local' })
+    window.location.replace('/login')
   }
 
   async function resetPassword(email) {

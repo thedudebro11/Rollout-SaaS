@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Loader2, Save, Upload, Check, AlertCircle } from 'lucide-react'
+import { Loader2, Save, Upload, Check, AlertCircle, X } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -123,6 +123,25 @@ export function SettingsPage() {
   const [savingPhone,      setSavingPhone]      = useState(false)
   const [savedPhone,       setSavedPhone]       = useState(false)
 
+  // Copy schedule link
+  const [copied, setCopied] = useState(false)
+
+  // Save error (shared across sections)
+  const [saveError, setSaveError] = useState('')
+
+  // Change password
+  const [currentPassword,  setCurrentPassword]  = useState('')
+  const [newPassword,      setNewPassword]      = useState('')
+  const [confirmPassword,  setConfirmPassword]  = useState('')
+  const [savingPassword,   setSavingPassword]   = useState(false)
+  const [passwordMsg,      setPasswordMsg]      = useState({ type: '', text: '' })
+
+  // Danger zone / delete account
+  const [showDeleteModal,  setShowDeleteModal]  = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [deleting,          setDeleting]         = useState(false)
+  const [deleteError,       setDeleteError]       = useState('')
+
   useEffect(() => {
     if (vendor) loadVendor()
   }, [vendor])
@@ -162,6 +181,7 @@ export function SettingsPage() {
     setSavingTruck(true)
     setSavedTruck(false)
     setLogoError('')
+    setSaveError('')
 
     let uploadedUrl = logoUrl
 
@@ -182,11 +202,17 @@ export function SettingsPage() {
       }
     }
 
-    await supabase.from('vendors').update({
+    const { error: dbErr } = await supabase.from('vendors').update({
       name:        name.trim(),
       description: description.trim() || null,
       logo_url:    uploadedUrl || null,
     }).eq('id', vendor.id)
+
+    if (dbErr) {
+      setSaveError('Failed to save. Please try again.')
+      setSavingTruck(false)
+      return
+    }
 
     setLogoUrl(uploadedUrl)
     setLogoFile(null)
@@ -200,12 +226,19 @@ export function SettingsPage() {
     e.preventDefault()
     setSavingNotif(true)
     setSavedNotif(false)
+    setSaveError('')
 
-    await supabase.from('vendors').update({
+    const { error } = await supabase.from('vendors').update({
       notification_time:    `${notifTime}:00`,
       timezone,
       sentiment_delay_hours: Number(sentimentDelay),
     }).eq('id', vendor.id)
+
+    if (error) {
+      setSaveError('Failed to save. Please try again.')
+      setSavingNotif(false)
+      return
+    }
 
     setSavingNotif(false)
     setSavedNotif(true)
@@ -216,10 +249,17 @@ export function SettingsPage() {
     e.preventDefault()
     setSavingReview(true)
     setSavedReview(false)
+    setSaveError('')
 
-    await supabase.from('vendors').update({
+    const { error } = await supabase.from('vendors').update({
       google_review_url: reviewUrl.trim() || null,
     }).eq('id', vendor.id)
+
+    if (error) {
+      setSaveError('Failed to save. Please try again.')
+      setSavingReview(false)
+      return
+    }
 
     setSavingReview(false)
     setSavedReview(true)
@@ -232,14 +272,69 @@ export function SettingsPage() {
     if (operatorPhone.trim() && !e164) return
     setSavingPhone(true)
     setSavedPhone(false)
+    setSaveError('')
 
-    await supabase.from('vendors').update({
+    const { error } = await supabase.from('vendors').update({
       operator_phone_number: e164 || null,
     }).eq('id', vendor.id)
+
+    if (error) {
+      setSaveError('Failed to save. Please try again.')
+      setSavingPhone(false)
+      return
+    }
 
     setSavingPhone(false)
     setSavedPhone(true)
     setTimeout(() => setSavedPhone(false), 3000)
+  }
+
+  async function handleChangePassword(e) {
+    e.preventDefault()
+    setPasswordMsg({ type: '', text: '' })
+
+    if (newPassword.length < 8) {
+      setPasswordMsg({ type: 'error', text: 'New password must be at least 8 characters.' })
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordMsg({ type: 'error', text: 'Passwords do not match.' })
+      return
+    }
+
+    setSavingPassword(true)
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    setSavingPassword(false)
+
+    if (error) {
+      setPasswordMsg({ type: 'error', text: error.message || 'Failed to update password.' })
+      return
+    }
+
+    setPasswordMsg({ type: 'success', text: 'Password updated successfully.' })
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+  }
+
+  async function handleDeleteAccount() {
+    if (deleteConfirmText !== 'DELETE') return
+    setDeleting(true)
+    setDeleteError('')
+
+    const { error: vendorErr } = await supabase
+      .from('vendors')
+      .delete()
+      .eq('id', vendor.id)
+
+    if (vendorErr) {
+      setDeleteError('Failed to delete account. Please contact support.')
+      setDeleting(false)
+      return
+    }
+
+    await supabase.auth.signOut({ scope: 'local' })
+    window.location.replace('/')
   }
 
   if (loading) {
@@ -260,6 +355,13 @@ export function SettingsPage() {
           Manage your truck profile and preferences.
         </p>
       </div>
+
+      {saveError && (
+        <div className="flex items-center gap-2 bg-red-900/20 border border-red-800/40 rounded-lg px-4 py-3 mb-2 text-red-400 font-body text-sm">
+          <AlertCircle size={14} className="flex-shrink-0" />
+          {saveError}
+        </div>
+      )}
 
       <div className="flex flex-col gap-6">
 
@@ -319,6 +421,28 @@ export function SettingsPage() {
                 className={inputClass + ' resize-none'}
               />
             </Field>
+
+            {/* Schedule link */}
+            {vendor?.slug && (
+              <Field label="Public schedule link">
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-[#141414] border border-[#2a2a2a]">
+                  <span className="text-[#888888] text-sm font-mono flex-1 truncate">
+                    {window.location.origin}/{vendor.slug}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`${window.location.origin}/${vendor.slug}`)
+                      setCopied(true)
+                      setTimeout(() => setCopied(false), 2000)
+                    }}
+                    className="text-[#FF6B35] text-sm font-medium whitespace-nowrap"
+                  >
+                    {copied ? 'Copied!' : 'Copy link'}
+                  </button>
+                </div>
+              </Field>
+            )}
 
             {logoError && (
               <div className="flex items-center gap-2 text-red-500 font-body text-sm">
@@ -457,7 +581,146 @@ export function SettingsPage() {
           </form>
         </Section>
 
+        {/* ── Security ────────────────────────────────────────────────────────── */}
+        <Section title="Security" description="Update your account password.">
+          <form onSubmit={handleChangePassword} className="flex flex-col gap-5">
+
+            <Field label="New password">
+              <input
+                type="password"
+                value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
+                placeholder="At least 8 characters"
+                className={inputClass}
+              />
+            </Field>
+
+            <Field label="Confirm new password">
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                placeholder="Re-enter new password"
+                className={inputClass}
+              />
+            </Field>
+
+            {passwordMsg.text && (
+              <div className={`flex items-center gap-2 font-body text-sm ${
+                passwordMsg.type === 'success' ? 'text-green-400' : 'text-red-400'
+              }`}>
+                <AlertCircle size={14} className="flex-shrink-0" />
+                {passwordMsg.text}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="submit"
+                disabled={savingPassword}
+                className="flex items-center gap-2 bg-accent hover:bg-accent-hover disabled:opacity-50 text-[#0a0a0a] font-body font-medium text-sm rounded-lg px-5 py-2.5 transition-colors"
+              >
+                {savingPassword ? (
+                  <><Loader2 size={14} className="animate-spin" /> Updating…</>
+                ) : (
+                  'Update Password'
+                )}
+              </button>
+            </div>
+          </form>
+        </Section>
+
+        {/* ── Danger Zone ─────────────────────────────────────────────────────── */}
+        <div className="bg-surface border border-red-900 rounded-xl overflow-hidden">
+          <div className="px-6 py-4 border-b border-red-900/50">
+            <h2 className="font-display font-bold text-base text-red-500">Danger Zone</h2>
+            <p className="text-text-secondary font-body text-xs mt-0.5">
+              These actions are permanent and cannot be undone.
+            </p>
+          </div>
+          <div className="px-6 py-5 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-text-primary font-body text-sm font-medium">Delete account</p>
+              <p className="text-text-tertiary font-body text-xs mt-0.5">
+                Permanently deletes your account, truck profile, and all data.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setShowDeleteModal(true); setDeleteConfirmText(''); setDeleteError('') }}
+              className="flex-shrink-0 px-4 py-2 rounded-lg border border-red-700 text-red-400 hover:bg-red-900/20 font-body font-medium text-sm transition-colors"
+            >
+              Delete Account
+            </button>
+          </div>
+        </div>
+
       </div>
+
+      {/* ── Delete confirmation modal ──────────────────────────────────────────── */}
+      {showDeleteModal && (
+        <>
+          <div className="fixed inset-0 bg-black/70 z-40" onClick={() => setShowDeleteModal(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div className="bg-surface border border-red-900 rounded-2xl w-full max-w-sm p-6 flex flex-col gap-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-display font-bold text-lg text-red-500">Delete Account</h3>
+                  <p className="text-text-secondary font-body text-sm mt-1">
+                    This will permanently delete your truck profile, all locations, subscribers, and messages.
+                    This action cannot be undone.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowDeleteModal(false)}
+                  className="text-text-tertiary hover:text-text-primary transition-colors flex-shrink-0"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-text-secondary font-body text-sm font-medium mb-1.5">
+                  Type <span className="text-red-400 font-mono font-bold">DELETE</span> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={e => setDeleteConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  className={inputClass}
+                />
+              </div>
+
+              {deleteError && (
+                <div className="flex items-center gap-2 text-red-400 font-body text-sm">
+                  <AlertCircle size={14} className="flex-shrink-0" />
+                  {deleteError}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteModal(false)}
+                  className="flex-1 px-4 py-2.5 rounded-lg border border-border text-text-secondary font-body text-sm font-medium hover:text-text-primary hover:border-text-secondary transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteAccount}
+                  disabled={deleteConfirmText !== 'DELETE' || deleting}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-body font-medium text-sm transition-colors"
+                >
+                  {deleting && <Loader2 size={14} className="animate-spin" />}
+                  Delete forever
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

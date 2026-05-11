@@ -25,112 +25,141 @@ Deno.serve(async (req: Request) => {
   const body      = await req.text()
   const sig       = req.headers.get('stripe-signature') ?? ''
 
-  let event: Stripe.Event
-  try {
-    if (webhookSecret) {
-      event = await stripe.webhooks.constructEventAsync(body, sig, webhookSecret)
-    } else {
-      // Dev mode: skip signature validation if secret not set yet
-      console.warn('[CP1] STRIPE_WEBHOOK_SECRET not set — skipping signature validation')
-      event = JSON.parse(body)
-    }
-  } catch (err) {
-    console.error('[CP1] signature validation failed:', err.message)
-    return json({ error: 'Invalid signature' }, 400)
+  if (!webhookSecret) {
+    console.error('[stripe-webhook] STRIPE_WEBHOOK_SECRET not set')
+    return json({ error: 'Server misconfiguration: STRIPE_WEBHOOK_SECRET not set' }, 500)
   }
 
-  console.log(`[CP1] event: ${event.type}`)
+  let event: Stripe.Event
+  try {
+    event = await stripe.webhooks.constructEventAsync(body, sig, webhookSecret)
+  } catch (err) {
+    console.error('[stripe-webhook] signature validation failed:', err.message)
+    return json({ error: 'Invalid signature' }, 400)
+  }
 
   // ── [CP2] Init service role client ────────────────────────────────────────
   const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY')!
   const db = createClient(Deno.env.get('SUPABASE_URL')!, serviceRoleKey)
 
-  // ── [CP3] Handle events ───────────────────────────────────────────────────
+  // ── Handle events ─────────────────────────────────────────────────────────
 
-  if (event.type === 'checkout.session.completed') {
-    const session      = event.data.object as Stripe.Checkout.Session
-    const vendorId     = session.metadata?.vendor_id
-    const planName     = session.metadata?.plan_name
-    const customerId   = session.customer as string
-    const subscriptionId = session.subscription as string
+  switch (event.type) {
+    case 'checkout.session.completed': {
+      const session        = event.data.object as Stripe.Checkout.Session
+      const vendorId       = session.metadata?.vendor_id
+      const planName       = session.metadata?.plan_name
+      const customerId     = session.customer as string
+      const subscriptionId = session.subscription as string
 
-    if (!vendorId || !planName) {
-      console.error('[CP3] missing metadata in checkout session')
-      return json({ received: true })
-    }
+      if (!vendorId || !planName) {
+        console.error('[stripe-webhook] missing metadata in checkout session')
+        return json({ received: true })
+      }
 
-    console.log(`[CP3] checkout completed — vendor: ${vendorId}, plan: ${planName}`)
+      // Get the plan id
+      const { data: plan } = await db
+        .from('plans')
+        .select('id')
+        .eq('name', planName)
+        .single()
 
-    // Get the plan id
-    const { data: plan } = await db
-      .from('plans')
-      .select('id')
-      .eq('name', planName)
-      .single()
+      // Get full subscription to get period end
+      const stripeSub = await stripe.subscriptions.retrieve(subscriptionId)
 
-    // Get full subscription to get period end
-    const stripeSub = await stripe.subscriptions.retrieve(subscriptionId)
-
-    await db.from('vendor_subscriptions')
-      .update({
-        stripe_customer_id:     customerId,
-        stripe_subscription_id: subscriptionId,
-        plan_id:                plan?.id ?? null,
-        status:                 'active',
-        trial_ends_at:          null,
-        current_period_ends_at: new Date(stripeSub.current_period_end * 1000).toISOString(),
-        updated_at:             new Date().toISOString(),
-      })
-      .eq('vendor_id', vendorId)
-
-    console.log('[CP3] vendor_subscriptions updated to active')
-  }
-
-  else if (event.type === 'customer.subscription.updated') {
-    const sub      = event.data.object as Stripe.Subscription
-    const vendorId = sub.metadata?.vendor_id
-
-    if (!vendorId) {
-      console.error('[CP3] no vendor_id in subscription metadata')
-      return json({ received: true })
-    }
-
-    const status = sub.status === 'active'    ? 'active'
-                 : sub.status === 'past_due'  ? 'past_due'
-                 : sub.status === 'canceled'  ? 'canceled'
-                 : sub.status === 'trialing'  ? 'trialing'
-                 : 'incomplete'
-
-    await db.from('vendor_subscriptions')
-      .update({
-        status,
-        current_period_ends_at: new Date(sub.current_period_end * 1000).toISOString(),
-        updated_at:             new Date().toISOString(),
-      })
-      .eq('vendor_id', vendorId)
-
-    console.log(`[CP3] subscription updated — vendor: ${vendorId}, status: ${status}`)
-  }
-
-  else if (event.type === 'customer.subscription.deleted') {
-    const sub      = event.data.object as Stripe.Subscription
-    const vendorId = sub.metadata?.vendor_id
-
-    if (vendorId) {
       await db.from('vendor_subscriptions')
         .update({
-          status:      'canceled',
-          canceled_at: new Date().toISOString(),
-          updated_at:  new Date().toISOString(),
+          stripe_customer_id:     customerId,
+          stripe_subscription_id: subscriptionId,
+          plan_id:                plan?.id ?? null,
+          status:                 'active',
+          trial_ends_at:          null,
+          current_period_ends_at: new Date(stripeSub.current_period_end * 1000).toISOString(),
+          updated_at:             new Date().toISOString(),
         })
         .eq('vendor_id', vendorId)
 
-      console.log(`[CP3] subscription canceled — vendor: ${vendorId}`)
+      break
     }
-  }
 
-  else {
-    console.log(`[CP3] unhandled event type: ${event.type}`)
+    case 'customer.subscription.updated': {
+      const sub      = event.data.object as Stripe.Subscription
+      const vendorId = sub.metadata?.vendor_id
+
+      if (!vendorId) {
+        console.error('[stripe-webhook] no vendor_id in subscription metadata')
+        return json({ received: true })
+      }
+
+      const status = sub.status === 'active'   ? 'active'
+                   : sub.status === 'past_due' ? 'past_due'
+                   : sub.status === 'canceled' ? 'canceled'
+                   : sub.status === 'trialing' ? 'trialing'
+                   : 'incomplete'
+
+      await db.from('vendor_subscriptions')
+        .update({
+          status,
+          current_period_ends_at: new Date(sub.current_period_end * 1000).toISOString(),
+          updated_at:             new Date().toISOString(),
+        })
+        .eq('vendor_id', vendorId)
+
+      break
+    }
+
+    case 'customer.subscription.deleted': {
+      const sub      = event.data.object as Stripe.Subscription
+      const vendorId = sub.metadata?.vendor_id
+
+      if (vendorId) {
+        await db.from('vendor_subscriptions')
+          .update({
+            status:      'canceled',
+            canceled_at: new Date().toISOString(),
+            updated_at:  new Date().toISOString(),
+          })
+          .eq('vendor_id', vendorId)
+      }
+
+      break
+    }
+
+    case 'invoice.payment_failed': {
+      const invoice        = event.data.object
+      const subscriptionId = invoice.subscription
+      if (subscriptionId) {
+        await db
+          .from('vendor_subscriptions')
+          .update({ status: 'past_due' })
+          .eq('stripe_subscription_id', subscriptionId)
+      }
+      break
+    }
+
+    case 'invoice.payment_succeeded': {
+      const invoice        = event.data.object
+      const subscriptionId = invoice.subscription
+      if (subscriptionId && invoice.lines?.data?.[0]?.period?.end) {
+        await db
+          .from('vendor_subscriptions')
+          .update({
+            status: 'active',
+            current_period_ends_at: new Date(invoice.lines.data[0].period.end * 1000).toISOString()
+          })
+          .eq('stripe_subscription_id', subscriptionId)
+      }
+      break
+    }
+
+    case 'customer.subscription.trial_will_end': {
+      // Trial ends in 3 days — just log for now, email integration is V2
+      console.log('Trial ending soon for subscription:', event.data.object.id)
+      break
+    }
+
+    default:
+      break
   }
 
   return json({ received: true })

@@ -50,10 +50,9 @@ Deno.serve(async (req: Request) => {
   })
   const { data: { user }, error: authErr } = await anonClient.auth.getUser()
   if (authErr || !user) {
-    console.error('[CP1] unauthorized:', authErr?.message)
+    console.error('[vendor-reply] unauthorized:', authErr?.message)
     return json({ error: 'Unauthorized' }, 401)
   }
-  console.log('[CP1] user:', user.id)
 
   // ── [CP2] Parse request body ──────────────────────────────────────────────
   const { conversation_id, body: messageBody } = await req.json()
@@ -64,7 +63,7 @@ Deno.serve(async (req: Request) => {
   // ── [CP3] Init service role client ────────────────────────────────────────
   const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY')
   if (!serviceRoleKey) {
-    console.error('[CP3] SERVICE_ROLE_KEY not set')
+    console.error('[vendor-reply] SERVICE_ROLE_KEY not set')
     return json({ error: 'Server misconfiguration' }, 500)
   }
   const db = createClient(SUPABASE_URL, serviceRoleKey)
@@ -77,7 +76,7 @@ Deno.serve(async (req: Request) => {
     .single()
 
   if (vendorErr || !vendor) {
-    console.error('[CP4] vendor not found:', vendorErr?.message)
+    console.error('[vendor-reply] vendor not found:', vendorErr?.message)
     return json({ error: 'Vendor not found' }, 404)
   }
 
@@ -93,8 +92,6 @@ Deno.serve(async (req: Request) => {
   if (conversation.vendor_id !== vendor.id) {
     return json({ error: 'Forbidden' }, 403)
   }
-
-  console.log('[CP4] ownership verified, conversation:', conversation_id)
 
   // ── [CP5] Get subscriber phone number ─────────────────────────────────────
   const { data: subscriber, error: subErr } = await db
@@ -125,13 +122,11 @@ Deno.serve(async (req: Request) => {
       )
       sendOk    = result.ok
       twilioSid = result.sid
-      if (!result.ok) console.error('[CP6] Twilio error:', result.errorMessage)
-      else console.log('[CP6] SMS sent:', twilioSid)
+      if (!result.ok) console.error('[vendor-reply] Twilio error:', result.errorMessage)
     } catch (err) {
-      console.error('[CP6] Twilio threw:', err.message)
+      console.error('[vendor-reply] Twilio threw:', err.message)
     }
   } else {
-    console.log('[CP6] Twilio not configured — skipping SMS send')
     sendOk = true  // Allow message to be saved even without Twilio in dev
   }
 
@@ -149,7 +144,7 @@ Deno.serve(async (req: Request) => {
     .single()
 
   if (msgErr) {
-    console.error('[CP7] message insert failed:', msgErr.message)
+    console.error('[vendor-reply] message insert failed:', msgErr.message)
     return json({ error: 'Failed to save message' }, 500)
   }
 
@@ -175,8 +170,6 @@ Deno.serve(async (req: Request) => {
     .update({ current_state: 'in_conversation', active_conversation_id: conversation_id, updated_at: now })
     .eq('vendor_id', vendor.id)
     .eq('subscriber_id', subscriber.id)
-
-  console.log('[CP7] done — message saved:', newMessage.id)
 
   return json({ success: true, message: newMessage })
 })

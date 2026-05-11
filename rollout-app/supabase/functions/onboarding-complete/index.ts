@@ -57,10 +57,9 @@ Deno.serve(async (req: Request) => {
 
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) {
-    console.error('[CP1] auth failed:', authError?.message)
+    console.error('[onboarding-complete] auth failed:', authError?.message)
     return json({ error: 'Unauthorized', checkpoint: 'auth' }, 401)
   }
-  console.log('[CP1] auth ok, user:', user.id)
 
   // ── Checkpoint 2: parse body ──────────────────────────────────────────────
   let vendor_id: string
@@ -69,10 +68,9 @@ Deno.serve(async (req: Request) => {
     vendor_id = body.vendor_id
     if (!vendor_id) throw new Error('vendor_id missing')
   } catch (err) {
-    console.error('[CP2] body parse failed:', err.message)
+    console.error('[onboarding-complete] body parse failed:', err.message)
     return json({ error: 'Invalid request body', checkpoint: 'body_parse' }, 400)
   }
-  console.log('[CP2] body ok, vendor_id:', vendor_id)
 
   // ── Checkpoint 3: vendor lookup ───────────────────────────────────────────
   const { data: vendor, error: vendorError } = await supabase
@@ -82,23 +80,21 @@ Deno.serve(async (req: Request) => {
     .single()
 
   if (vendorError || !vendor) {
-    console.error('[CP3] vendor not found:', vendorError?.message)
+    console.error('[onboarding-complete] vendor not found:', vendorError?.message)
     return json({ error: 'Vendor not found', checkpoint: 'vendor_lookup', details: vendorError?.message }, 404)
   }
   if (vendor.user_id !== user.id) {
-    console.error('[CP3] ownership mismatch')
+    console.error('[onboarding-complete] ownership mismatch')
     return json({ error: 'Forbidden', checkpoint: 'vendor_ownership' }, 403)
   }
-  console.log('[CP3] vendor ok:', vendor.id)
 
   // ── Checkpoint 4: admin client ────────────────────────────────────────────
   const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY')
   if (!serviceRoleKey) {
-    console.error('[CP4] SUPABASE_SERVICE_ROLE_KEY not set')
+    console.error('[onboarding-complete] SERVICE_ROLE_KEY not set')
     return json({ error: 'Server misconfiguration: missing service role key', checkpoint: 'service_role_key' }, 500)
   }
   const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, serviceRoleKey)
-  console.log('[CP4] admin client ok')
 
   // ── Checkpoint 5: Twilio provisioning (skip if creds not set) ─────────────
   let twilioPhoneNumber = vendor.twilio_phone_number
@@ -108,10 +104,7 @@ Deno.serve(async (req: Request) => {
     const authToken   = Deno.env.get('TWILIO_AUTH_TOKEN')
     const webhookUrl  = Deno.env.get('TWILIO_WEBHOOK_URL')
 
-    if (!accountSid || !authToken || !webhookUrl) {
-      console.log('[CP5] Twilio creds not set — skipping provisioning')
-    } else {
-      console.log('[CP5] provisioning Twilio number...')
+    if (accountSid && authToken && webhookUrl) {
       let provisionedNumber: string | null = null
       let provisionedSid: string | null = null
       let provisionError = ''
@@ -121,11 +114,10 @@ Deno.serve(async (req: Request) => {
           const result = await provisionPhoneNumber(accountSid, authToken, webhookUrl)
           provisionedNumber = result.phoneNumber
           provisionedSid = result.sid
-          console.log('[CP5] provisioned:', provisionedNumber)
           break
         } catch (err) {
           provisionError = err.message
-          console.error(`[CP5] attempt ${attempt} failed:`, provisionError)
+          console.error(`[onboarding-complete] provisioning attempt ${attempt} failed:`, provisionError)
           if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt))
         }
       }
@@ -135,15 +127,13 @@ Deno.serve(async (req: Request) => {
           .from('vendors')
           .update({ twilio_phone_number: provisionedNumber, twilio_phone_sid: provisionedSid })
           .eq('id', vendor_id)
-        if (storeErr) console.error('[CP5] store phone failed:', storeErr.message)
+        if (storeErr) console.error('[onboarding-complete] store phone failed:', storeErr.message)
         else twilioPhoneNumber = provisionedNumber
       } else {
-        console.error('[CP5] all provisioning attempts failed:', provisionError)
+        console.error('[onboarding-complete] all provisioning attempts failed:', provisionError)
         // Non-fatal — continue to mark onboarding complete
       }
     }
-  } else {
-    console.log('[CP5] already has Twilio number, skipping')
   }
 
   // ── Checkpoint 6: mark onboarding complete ────────────────────────────────
@@ -153,10 +143,9 @@ Deno.serve(async (req: Request) => {
     .eq('id', vendor_id)
 
   if (updateErr) {
-    console.error('[CP6] onboarding_complete update failed:', updateErr.message)
+    console.error('[onboarding-complete] onboarding_complete update failed:', updateErr.message)
     return json({ error: 'Failed to complete onboarding', checkpoint: 'onboarding_complete', details: updateErr.message }, 500)
   }
-  console.log('[CP6] onboarding_complete = true')
 
   return json({ success: true, twilio_phone_number: twilioPhoneNumber })
 })

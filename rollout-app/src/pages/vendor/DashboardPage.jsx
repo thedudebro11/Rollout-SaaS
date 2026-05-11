@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users, MapPin, MessageSquare, Smile, Clock, TrendingUp, Loader2, Plus, QrCode } from 'lucide-react'
+import { Users, MapPin, MessageSquare, Smile, Clock, TrendingUp, Plus, QrCode, MessageCircle } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../contexts/AuthContext'
@@ -66,6 +66,30 @@ function greeting() {
   return 'Good evening'
 }
 
+// Build an array of the 7 days for the current week (Mon–Sun)
+function getCurrentWeekDays() {
+  const today = new Date()
+  const dayOfWeek = today.getDay() // 0 = Sun
+  // Monday = dayOfWeek 1; shift so Monday is index 0
+  const monday = new Date(today)
+  monday.setDate(today.getDate() - ((dayOfWeek + 6) % 7))
+  monday.setHours(0, 0, 0, 0)
+
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday)
+    d.setDate(monday.getDate() + i)
+    return {
+      iso: [
+        d.getFullYear(),
+        String(d.getMonth() + 1).padStart(2, '0'),
+        String(d.getDate()).padStart(2, '0'),
+      ].join('-'),
+      label: d.toLocaleDateString('en-US', { weekday: 'short' }),
+      dateNum: d.getDate(),
+    }
+  })
+}
+
 // ── Stat Card ─────────────────────────────────────────────────────────────────
 
 function StatCard({ icon: Icon, label, value, sub, accent }) {
@@ -82,6 +106,20 @@ function StatCard({ icon: Icon, label, value, sub, accent }) {
         {sub && (
           <p className="text-text-tertiary font-body text-xs mt-0.5">{sub}</p>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ── Stat Card Skeleton ────────────────────────────────────────────────────────
+
+function StatCardSkeleton() {
+  return (
+    <div className="bg-[#141414] border border-border rounded-xl p-5 flex flex-col gap-3 animate-pulse">
+      <div className="w-9 h-9 rounded-lg bg-surface-raised" />
+      <div>
+        <div className="h-7 w-16 bg-surface-raised rounded mb-2" />
+        <div className="h-3.5 w-28 bg-surface-raised rounded" />
       </div>
     </div>
   )
@@ -140,18 +178,184 @@ function RecentSubscriberRow({ sub }) {
   )
 }
 
+// ── Week Strip ────────────────────────────────────────────────────────────────
+
+function WeekStrip({ weekDays, weekLocations, loading }) {
+  const todayISO_ = todayISO()
+
+  if (loading) {
+    return (
+      <div className="bg-surface border border-border rounded-xl p-5 mb-6 animate-pulse">
+        <div className="h-4 w-32 bg-surface-raised rounded mb-4" />
+        <div className="flex gap-3 overflow-x-auto pb-1">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div key={i} className="flex-shrink-0 w-20 h-20 bg-surface-raised rounded-xl" />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-xl p-5 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Clock size={16} className="text-text-secondary" />
+          <h2 className="font-display font-bold text-base text-text-primary">This Week</h2>
+        </div>
+        <Link
+          to="/locations"
+          className="text-xs font-body font-medium text-accent hover:text-accent-hover transition-colors"
+        >
+          Manage →
+        </Link>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {weekDays.map(day => {
+          const isToday = day.iso === todayISO_
+          const loc = weekLocations.find(l => l.date === day.iso)
+
+          return (
+            <div
+              key={day.iso}
+              className={`flex-shrink-0 w-[80px] rounded-xl p-2.5 flex flex-col items-center gap-1.5 border transition-colors ${
+                isToday
+                  ? 'border-accent bg-accent-muted'
+                  : 'border-border bg-surface-raised'
+              }`}
+            >
+              <p className={`font-body text-[11px] font-medium ${isToday ? 'text-accent' : 'text-text-secondary'}`}>
+                {day.label}
+              </p>
+              <p className={`font-body text-sm font-semibold ${isToday ? 'text-accent' : 'text-text-primary'}`}>
+                {day.dateNum}
+              </p>
+
+              {loc ? (
+                <div className="w-full flex flex-col items-center gap-1 mt-0.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
+                  <p className="font-body text-[10px] text-text-secondary text-center leading-tight line-clamp-2 w-full">
+                    {loc.name || loc.address || 'Location'}
+                  </p>
+                </div>
+              ) : (
+                <Link
+                  to="/locations"
+                  className="mt-0.5 w-10 h-10 rounded-lg border border-dashed border-border flex items-center justify-center hover:border-accent transition-colors group"
+                >
+                  <Plus size={12} className="text-text-tertiary group-hover:text-accent transition-colors" />
+                </Link>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ── Open Conversations Preview ────────────────────────────────────────────────
+
+function OpenConversationsCard({ conversations, loading }) {
+  if (loading) {
+    return (
+      <div className="bg-surface border border-border rounded-xl p-5 animate-pulse">
+        <div className="h-4 w-40 bg-surface-raised rounded mb-4" />
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-3 py-3 border-b border-border last:border-0">
+            <div className="w-8 h-8 rounded-full bg-surface-raised flex-shrink-0" />
+            <div className="flex-1">
+              <div className="h-3.5 w-28 bg-surface-raised rounded mb-1.5" />
+              <div className="h-3 w-40 bg-surface-raised rounded" />
+            </div>
+            <div className="h-3 w-12 bg-surface-raised rounded" />
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <MessageCircle size={16} className="text-text-secondary" />
+          <h2 className="font-display font-bold text-base text-text-primary">Open Conversations</h2>
+        </div>
+        <Link
+          to="/inbox"
+          className="text-xs font-body font-medium text-accent hover:text-accent-hover transition-colors"
+        >
+          View all →
+        </Link>
+      </div>
+
+      {conversations.length === 0 ? (
+        <div className="text-center py-8">
+          <p className="text-text-secondary font-body text-sm mb-1">
+            No open conversations — your customers are happy! 🎉
+          </p>
+          <p className="text-text-tertiary font-body text-xs">
+            Replies from customers will appear here.
+          </p>
+        </div>
+      ) : (
+        <div>
+          {conversations.map(conv => {
+            const phone = conv.subscribers?.phone_number ?? ''
+            const msgs = conv.conversation_messages ?? []
+            const lastMsg = msgs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0]
+            const preview = lastMsg ? lastMsg.body.slice(0, 40) + (lastMsg.body.length > 40 ? '…' : '') : 'No messages'
+            const timestamp = lastMsg ? timeAgo(lastMsg.created_at) : timeAgo(conv.created_at)
+
+            return (
+              <div key={conv.id} className="flex items-center gap-3 py-3 border-b border-border last:border-0">
+                <div className="w-8 h-8 rounded-full bg-accent-muted flex items-center justify-center flex-shrink-0">
+                  <MessageSquare size={14} className="text-accent" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-text-primary font-body text-sm font-medium font-mono tracking-wide">
+                    {maskPhone(phone)}
+                  </p>
+                  <p className="text-text-tertiary font-body text-xs mt-0.5 truncate">
+                    {preview}
+                  </p>
+                </div>
+                <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  <p className="text-text-tertiary font-body text-xs">{timestamp}</p>
+                  <Link
+                    to="/inbox"
+                    className="text-[10px] font-body font-medium text-accent hover:text-accent-hover transition-colors"
+                  >
+                    View →
+                  </Link>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export function DashboardPage() {
   const { vendor } = useAuth()
 
-  const [loading, setLoading]                   = useState(true)
-  const [subscriberCount, setSubscriberCount]   = useState(0)
-  const [newThisWeek, setNewThisWeek]           = useState(0)
-  const [todayLocations, setTodayLocations]     = useState([])
-  const [smsThisMonth, setSmsThisMonth]         = useState(0)
-  const [sentiment, setSentiment]               = useState({ happy: 0, unhappy: 0 })
+  const [loading, setLoading]                     = useState(true)
+  const [subscriberCount, setSubscriberCount]     = useState(0)
+  const [newThisWeek, setNewThisWeek]             = useState(0)
+  const [todayLocations, setTodayLocations]       = useState([])
+  const [smsThisMonth, setSmsThisMonth]           = useState(0)
+  const [sentiment, setSentiment]                 = useState({ happy: 0, unhappy: 0 })
   const [recentSubscribers, setRecentSubscribers] = useState([])
+  const [weekLocations, setWeekLocations]         = useState([])
+  const [openConversations, setOpenConversations] = useState([])
+
+  const weekDays = getCurrentWeekDays()
 
   useEffect(() => {
     if (vendor) loadDashboard()
@@ -160,8 +364,17 @@ export function DashboardPage() {
 
   async function loadDashboard() {
     setLoading(true)
-    const today    = todayISO()
+    const today      = todayISO()
     const monthStart = startOfMonthISO()
+
+    // Compute week range (Mon–Sun)
+    const weekStart = new Date()
+    weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7))
+    weekStart.setHours(0, 0, 0, 0)
+    const weekEnd = new Date(weekStart)
+    weekEnd.setDate(weekStart.getDate() + 6)
+    const weekStartISO = weekStart.toISOString().split('T')[0]
+    const weekEndISO   = weekEnd.toISOString().split('T')[0]
 
     const [
       { count: subCount },
@@ -170,6 +383,8 @@ export function DashboardPage() {
       { count: smsCount },
       { data: sentimentData },
       { data: recentSubData },
+      { data: weekLocs },
+      { data: openConvs },
     ] = await Promise.all([
       // Active subscriber count
       supabase
@@ -214,6 +429,28 @@ export function DashboardPage() {
         .eq('vendor_id', vendor.id)
         .order('opted_in_at', { ascending: false })
         .limit(5),
+
+      // This week's locations for the strip
+      supabase
+        .from('locations')
+        .select('id, name, date, start_time, end_time, address')
+        .eq('vendor_id', vendor.id)
+        .gte('date', weekStartISO)
+        .lte('date', weekEndISO),
+
+      // Open conversations (up to 3)
+      supabase
+        .from('conversations')
+        .select(`
+          id,
+          created_at,
+          subscribers (phone_number),
+          conversation_messages (body, created_at)
+        `)
+        .eq('vendor_id', vendor.id)
+        .eq('status', 'open')
+        .order('created_at', { ascending: false })
+        .limit(3),
     ])
 
     setSubscriberCount(subCount ?? 0)
@@ -226,15 +463,9 @@ export function DashboardPage() {
     setSentiment({ happy, unhappy })
 
     setRecentSubscribers(recentSubData ?? [])
+    setWeekLocations(weekLocs ?? [])
+    setOpenConversations(openConvs ?? [])
     setLoading(false)
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 size={24} className="animate-spin text-text-tertiary" />
-      </div>
-    )
   }
 
   const totalSentiment = sentiment.happy + sentiment.unhappy
@@ -256,31 +487,63 @@ export function DashboardPage() {
       </div>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard
-          icon={Users}
-          label="Active subscribers"
-          value={subscriberCount}
-          sub={newThisWeek > 0 ? `↑ ${newThisWeek} new this week` : undefined}
-          accent
-        />
-        <StatCard
-          icon={MapPin}
-          label="Locations today"
-          value={todayLocations.length}
-          sub={todayLocations.length === 0 ? 'None scheduled' : undefined}
-        />
-        <StatCard
-          icon={MessageSquare}
-          label="SMS sent this month"
-          value={smsThisMonth}
-        />
-        <StatCard
-          icon={Smile}
-          label="Happy customers"
-          value={happyPct !== null ? `${happyPct}%` : '—'}
-          sub={totalSentiment > 0 ? `${totalSentiment} responses` : 'No responses yet'}
-        />
+      {loading ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          {Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <StatCard
+            icon={Users}
+            label="Active subscribers"
+            value={subscriberCount}
+            sub={newThisWeek > 0 ? `↑ ${newThisWeek} new this week` : undefined}
+            accent
+          />
+          <StatCard
+            icon={MapPin}
+            label="Locations today"
+            value={todayLocations.length}
+            sub={todayLocations.length === 0 ? 'None scheduled' : undefined}
+          />
+          <StatCard
+            icon={MessageSquare}
+            label="SMS sent this month"
+            value={smsThisMonth}
+          />
+          <StatCard
+            icon={Smile}
+            label="Happy customers"
+            value={happyPct !== null ? `${happyPct}%` : '—'}
+            sub={totalSentiment > 0 ? `${totalSentiment} responses` : 'No responses yet'}
+          />
+        </div>
+      )}
+
+      {/* Quick Actions */}
+      <div className="flex flex-wrap gap-2 mb-6">
+        <Link
+          to="/locations"
+          className="border border-[#2a2a2a] bg-[#141414] text-[#f5f5f5] hover:border-[#FF6B35] text-sm py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5"
+        >
+          <Plus size={14} />
+          Add Today's Location
+        </Link>
+        <Link
+          to="/qr"
+          className="border border-[#2a2a2a] bg-[#141414] text-[#f5f5f5] hover:border-[#FF6B35] text-sm py-2 px-4 rounded-lg transition-colors flex items-center gap-1.5"
+        >
+          <QrCode size={14} />
+          Download QR Code
+        </Link>
+      </div>
+
+      {/* 7-Day Schedule Strip */}
+      <WeekStrip weekDays={weekDays} weekLocations={weekLocations} loading={loading} />
+
+      {/* Open Conversations */}
+      <div className="mb-6">
+        <OpenConversationsCard conversations={openConversations} loading={loading} />
       </div>
 
       {/* Two-column layout */}
@@ -301,7 +564,19 @@ export function DashboardPage() {
             </Link>
           </div>
 
-          {todayLocations.length === 0 ? (
+          {loading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 2 }).map((_, i) => (
+                <div key={i} className="flex items-start gap-3 py-3 border-b border-border last:border-0 animate-pulse">
+                  <div className="w-8 h-8 rounded-lg bg-surface-raised flex-shrink-0" />
+                  <div className="flex-1">
+                    <div className="h-3.5 w-40 bg-surface-raised rounded mb-1.5" />
+                    <div className="h-3 w-24 bg-surface-raised rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : todayLocations.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-text-secondary font-body text-sm mb-3">
                 No locations scheduled for today.
@@ -338,7 +613,20 @@ export function DashboardPage() {
             </Link>
           </div>
 
-          {recentSubscribers.length === 0 ? (
+          {loading ? (
+            <div className="space-y-1">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-3 py-3 border-b border-border last:border-0 animate-pulse">
+                  <div className="w-8 h-8 rounded-full bg-surface-raised flex-shrink-0" />
+                  <div className="flex-1">
+                    <div className="h-3.5 w-28 bg-surface-raised rounded mb-1.5" />
+                    <div className="h-3 w-16 bg-surface-raised rounded" />
+                  </div>
+                  <div className="h-5 w-14 bg-surface-raised rounded-full" />
+                </div>
+              ))}
+            </div>
+          ) : recentSubscribers.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-text-secondary font-body text-sm mb-3">
                 No subscribers yet.

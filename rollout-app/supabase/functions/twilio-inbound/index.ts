@@ -88,7 +88,6 @@ async function geocode(address: string): Promise<{ lat: number; lng: number } | 
 
 async function handleOperatorCommand(body: string, vendor: any, db: any): Promise<Response> {
   const cmd = body.trim().toUpperCase()
-  console.log(`[OP] command from operator: "${body}"`)
 
   // ── HELP ──────────────────────────────────────────────────────────────────
   if (cmd === 'HELP') {
@@ -179,7 +178,6 @@ async function handleOperatorCommand(body: string, vendor: any, db: any): Promis
   }
 
   const reply = `Got it! Added for today:\n${address}\n${fmtTime(start)} – ${fmtTime(end)}\n\nSend another text to add a second stop.`
-  console.log(`[OP] location added: ${address} ${start}–${end} on ${today}`)
   return new Response(twiml(reply), { status: 200, headers: XML })
 }
 
@@ -189,30 +187,46 @@ Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok')
 
   try {
-    // ── [CP1] Parse Twilio webhook ────────────────────────────────────────────
-    const text   = await req.text()
-    const params = new URLSearchParams(text)
-    const from   = params.get('From') ?? ''
-    const to     = params.get('To')   ?? ''
-    const body   = (params.get('Body') ?? '').trim()
+    // ── Validate Twilio signature ─────────────────────────────────────────────
+    const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN') ?? ''
+    const twilioSignature = req.headers.get('X-Twilio-Signature') ?? ''
+    const url = req.url
+    const bodyText = await req.text()
+    const params = Object.fromEntries(new URLSearchParams(bodyText))
 
-    console.log(`[CP1] inbound SMS from=${from} to=${to} body="${body}"`)
+    // Compute expected signature: HMAC-SHA1 of (url + sorted params) with auth token
+    const encoder = new TextEncoder()
+    const keyData = encoder.encode(twilioAuthToken)
+    const key = await crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
+    let paramStr = url
+    const sortedKeys = Object.keys(params).sort()
+    for (const k of sortedKeys) paramStr += k + params[k]
+    const sigData = encoder.encode(paramStr)
+    const sigBuffer = await crypto.subtle.sign('HMAC', key, sigData)
+    const expectedSig = btoa(String.fromCharCode(...new Uint8Array(sigBuffer)))
+
+    if (twilioSignature !== expectedSig) {
+      return new Response('Forbidden', { status: 403 })
+    }
+
+    // ── Parse Twilio webhook fields from already-parsed params ────────────────
+    const from   = params['From'] ?? ''
+    const to     = params['To']   ?? ''
+    const body   = (params['Body'] ?? '').trim()
 
     if (!from || !to || !body) {
-      console.error('[CP1] missing required Twilio fields')
       return new Response(twimlEmpty(), { status: 200, headers: XML })
     }
 
-    // ── [CP2] Init service role client ────────────────────────────────────────
+    // ── Init service role client ──────────────────────────────────────────────
     const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY')
     if (!serviceRoleKey) {
-      console.error('[CP2] SERVICE_ROLE_KEY not set')
+      console.error('[twilio-inbound] SERVICE_ROLE_KEY not set')
       return new Response(twimlEmpty(), { status: 200, headers: XML })
     }
     const db = createClient(Deno.env.get('SUPABASE_URL')!, serviceRoleKey)
-    console.log('[CP2] service role client ok')
 
-    // ── [CP3] Look up vendor by To number ────────────────────────────────────
+    // ── Look up vendor by To number ───────────────────────────────────────────
     const { data: vendor, error: vendorErr } = await db
       .from('vendors')
       .select('id, name, google_review_url, operator_phone_number, timezone')
@@ -221,16 +235,14 @@ Deno.serve(async (req: Request) => {
       .single()
 
     if (vendorErr || !vendor) {
-      console.error('[CP3] vendor not found for number:', to, vendorErr?.message)
+      console.error('[twilio-inbound] vendor not found for number:', to, vendorErr?.message)
       return new Response(twimlEmpty(), { status: 200, headers: XML })
     }
-    console.log(`[CP3] vendor: ${vendor.id} (${vendor.name})`)
 
-    // ── [CP4] STOP / START — highest priority, carrier compliance ─────────────
+    // ── STOP / START — highest priority, carrier compliance ───────────────────
     const firstWord = body.toLowerCase().split(/\s+/)[0]
 
     if (STOP_KEYWORDS.has(firstWord)) {
-      console.log(`[CP4] STOP from ${from}`)
       await db.from('subscribers')
         .update({ is_active: false })
         .eq('vendor_id', vendor.id)
@@ -250,7 +262,6 @@ Deno.serve(async (req: Request) => {
     }
 
     if (START_KEYWORDS.has(firstWord)) {
-      console.log(`[CP4] START from ${from}`)
       await db.from('subscribers')
         .update({ is_active: true })
         .eq('vendor_id', vendor.id)
@@ -269,13 +280,12 @@ Deno.serve(async (req: Request) => {
       return new Response(twiml(reply), { status: 200, headers: XML })
     }
 
-    // ── [CP4b] Operator command — checked before subscriber lookup ────────────
+    // ── Operator command — checked before subscriber lookup ───────────────────
     if (vendor.operator_phone_number && from === vendor.operator_phone_number) {
-      console.log(`[CP4b] operator command from ${from}`)
       return handleOperatorCommand(body, vendor, db)
     }
 
-    // ── [CP5] Look up subscriber ──────────────────────────────────────────────
+    // ── Look up subscriber ────────────────────────────────────────────────────
     const { data: subscriber, error: subErr } = await db
       .from('subscribers')
       .select('id, is_active')
@@ -284,18 +294,14 @@ Deno.serve(async (req: Request) => {
       .single()
 
     if (subErr || !subscriber) {
-      console.log(`[CP5] no subscriber for ${from} — ignoring`)
       return new Response(twimlEmpty(), { status: 200, headers: XML })
     }
 
     if (!subscriber.is_active) {
-      console.log(`[CP5] subscriber ${subscriber.id} is inactive — ignoring`)
       return new Response(twimlEmpty(), { status: 200, headers: XML })
     }
 
-    console.log(`[CP5] subscriber: ${subscriber.id}`)
-
-    // ── [CP6] Look up SMS state ───────────────────────────────────────────────
+    // ── Look up SMS state ─────────────────────────────────────────────────────
     const { data: smsState, error: stateErr } = await db
       .from('subscriber_sms_state')
       .select('id, current_state, active_conversation_id')
@@ -304,13 +310,11 @@ Deno.serve(async (req: Request) => {
       .single()
 
     if (stateErr || !smsState) {
-      console.error('[CP6] sms state not found for subscriber:', subscriber.id, stateErr?.message)
+      console.error('[twilio-inbound] sms state not found for subscriber:', subscriber.id, stateErr?.message)
       return new Response(twimlEmpty(), { status: 200, headers: XML })
     }
 
-    console.log(`[CP6] current state: ${smsState.current_state}`)
-
-    // ── [CP7] Route by state ──────────────────────────────────────────────────
+    // ── Route by state ────────────────────────────────────────────────────────
 
     let effectiveState = smsState.current_state
     let effectiveConversationId = smsState.active_conversation_id ?? null
@@ -323,7 +327,6 @@ Deno.serve(async (req: Request) => {
 
       if (isPositive || isNegative) {
         const sentiment = isPositive ? 'happy' : 'unhappy'
-        console.log(`[CP7] sentiment: ${sentiment}`)
 
         // Record sentiment response
         await db.from('sentiment_responses').insert({
@@ -374,7 +377,6 @@ Deno.serve(async (req: Request) => {
       }
 
       // Unrecognized sentiment reply — log it and treat as a conversation message
-      console.log('[CP7] unrecognized sentiment reply — routing to conversation')
       await db.from('sms_log').insert({
         vendor_id:     vendor.id,
         subscriber_id: subscriber.id,
@@ -395,8 +397,6 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── idle / in_conversation → route to inbox ───────────────────────────────
-    console.log(`[CP7] conversation routing (effective state: ${effectiveState})`)
-
     let conversationId = effectiveConversationId
 
     // Verify existing conversation is still open
@@ -426,12 +426,11 @@ Deno.serve(async (req: Request) => {
         .single()
 
       if (convErr || !newConv) {
-        console.error('[CP7] failed to create conversation:', convErr?.message)
+        console.error('[twilio-inbound] failed to create conversation:', convErr?.message)
         return new Response(twimlEmpty(), { status: 200, headers: XML })
       }
 
       conversationId = newConv.id
-      console.log(`[CP7] created conversation: ${conversationId}`)
     } else {
       // Bump last_message_at on existing conversation
       await db.from('conversations')
@@ -465,8 +464,6 @@ Deno.serve(async (req: Request) => {
       message_type:  'idle_reply',
       status:        'received',
     })
-
-    console.log(`[CP7] message saved to conversation ${conversationId} — no auto-reply`)
 
     // No auto-reply: vendor responds via the Inbox UI (Module 9)
     return new Response(twimlEmpty(), { status: 200, headers: XML })

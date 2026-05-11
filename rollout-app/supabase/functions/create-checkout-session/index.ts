@@ -29,7 +29,6 @@ Deno.serve(async (req: Request) => {
   })
   const { data: { user }, error: authErr } = await anonClient.auth.getUser()
   if (authErr || !user) return json({ error: 'Unauthorized' }, 401)
-  console.log('[CP1] user:', user.id)
 
   // ── [CP2] Parse body ──────────────────────────────────────────────────────
   const { plan_name } = await req.json()
@@ -67,8 +66,6 @@ Deno.serve(async (req: Request) => {
     return json({ error: 'Plan price not configured' }, 500)
   }
 
-  console.log(`[CP5] plan: ${plan_name}, price: ${plan.stripe_monthly_price_id}`)
-
   // ── [CP6] Create Stripe Checkout session ──────────────────────────────────
   const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')!
   const stripe    = new Stripe(stripeKey, {
@@ -97,8 +94,12 @@ Deno.serve(async (req: Request) => {
     sessionParams.customer_email = user.email
   }
 
-  const session = await stripe.checkout.sessions.create(sessionParams)
-  console.log('[CP6] checkout session created:', session.id)
+  let session
+  try {
+    session = await stripe.checkout.sessions.create(sessionParams)
+  } catch (stripeError) {
+    return json({ error: 'Failed to create checkout session. Please try again.' }, 500)
+  }
 
   return json({ url: session.url })
 })

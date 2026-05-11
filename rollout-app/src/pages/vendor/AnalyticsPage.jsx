@@ -3,7 +3,7 @@ import {
   AreaChart, Area, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
-import { TrendingUp, MessageSquare, Smile, Users, Loader2 } from 'lucide-react'
+import { TrendingUp, MessageSquare, Smile, Users, Reply } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -18,15 +18,24 @@ function labelDate(dateStr) {
   return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
-function last30Days() {
-  const days = []
-  for (let i = 29; i >= 0; i--) {
+function buildDayRange(days) {
+  const result = []
+  for (let i = days - 1; i >= 0; i--) {
     const d = new Date()
     d.setDate(d.getDate() - i)
-    days.push(toDateStr(d.toISOString()))
+    result.push(toDateStr(d.toISOString()))
   }
-  return days
+  return result
 }
+
+// ── Date Range Config ─────────────────────────────────────────────────────────
+
+const DATE_RANGES = [
+  { label: '7 days',   days: 7 },
+  { label: '30 days',  days: 30 },
+  { label: '90 days',  days: 90 },
+  { label: 'All time', days: null },
+]
 
 // ── Stat Card ─────────────────────────────────────────────────────────────────
 
@@ -41,6 +50,31 @@ function StatCard({ icon: Icon, label, value, sub, iconColor }) {
         <p className="text-text-secondary font-body text-sm mt-0.5">{label}</p>
         {sub && <p className="text-text-tertiary font-body text-xs mt-0.5">{sub}</p>}
       </div>
+    </div>
+  )
+}
+
+// ── Stat Card Skeleton ────────────────────────────────────────────────────────
+
+function StatCardSkeleton() {
+  return (
+    <div className="bg-surface border border-border rounded-xl p-5 flex items-start gap-4 animate-pulse">
+      <div className="w-10 h-10 rounded-lg bg-surface-raised flex-shrink-0" />
+      <div>
+        <div className="h-7 w-16 bg-surface-raised rounded mb-2" />
+        <div className="h-3.5 w-28 bg-surface-raised rounded" />
+      </div>
+    </div>
+  )
+}
+
+// ── Chart Skeleton ────────────────────────────────────────────────────────────
+
+function ChartSkeleton() {
+  return (
+    <div className="bg-surface border border-border rounded-xl p-5 animate-pulse">
+      <div className="h-4 w-36 bg-surface-raised rounded mb-5" />
+      <div className="h-[200px] bg-surface-raised rounded-lg" />
     </div>
   )
 }
@@ -72,14 +106,14 @@ function SentimentBar({ happy, unhappy }) {
       </div>
     )
   }
-  const happyPct  = Math.round((happy  / total) * 100)
+  const happyPct   = Math.round((happy  / total) * 100)
   const unhappyPct = 100 - happyPct
 
   return (
     <div>
       {/* Bar */}
       <div className="flex rounded-full overflow-hidden h-4 mb-3">
-        {happyPct > 0  && <div className="bg-success transition-all"  style={{ width: `${happyPct}%` }} />}
+        {happyPct > 0   && <div className="bg-success transition-all" style={{ width: `${happyPct}%` }} />}
         {unhappyPct > 0 && <div className="bg-error transition-all"   style={{ width: `${unhappyPct}%` }} />}
       </div>
 
@@ -105,60 +139,76 @@ function SentimentBar({ happy, unhappy }) {
 export function AnalyticsPage() {
   const { vendor } = useAuth()
 
-  const [loading, setLoading]       = useState(true)
-  const [growthData, setGrowthData] = useState([])
-  const [smsData, setSmsData]       = useState([])
-  const [sentiment, setSentiment]   = useState({ happy: 0, unhappy: 0 })
-  const [totals, setTotals]         = useState({ subscribers: 0, smsSent: 0, deliveryRate: 0 })
+  const [selectedRange, setSelectedRange] = useState(30)
+  const [loading, setLoading]             = useState(true)
+  const [growthData, setGrowthData]       = useState([])
+  const [smsData, setSmsData]             = useState([])
+  const [sentiment, setSentiment]         = useState({ happy: 0, unhappy: 0 })
+  const [totals, setTotals]               = useState({ subscribers: 0, smsSent: 0, deliveryRate: 0 })
+  const [responseCount, setResponseCount] = useState(0)
 
   useEffect(() => {
     if (vendor) loadAnalytics()
-  }, [vendor])
+  }, [selectedRange, vendor])
 
   async function loadAnalytics() {
     setLoading(true)
 
-    const thirtyDaysAgo = new Date()
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29)
-    const cutoff = thirtyDaysAgo.toISOString()
+    // Build cutoff ISO string based on selected range
+    const cutoff = selectedRange !== null
+      ? new Date(Date.now() - selectedRange * 24 * 60 * 60 * 1000).toISOString()
+      : null
+
+    // For the growth chart we always show up to 90 data points capped at selectedRange
+    const chartDays = selectedRange !== null ? Math.min(selectedRange, 90) : 90
+
+    // Build queries dynamically
+    let subsQuery = supabase
+      .from('subscribers')
+      .select('opted_in_at, is_active')
+      .eq('vendor_id', vendor.id)
+      .order('opted_in_at', { ascending: true })
+
+    let smsQuery = supabase
+      .from('sms_log')
+      .select('created_at, direction, status')
+      .eq('vendor_id', vendor.id)
+      .eq('direction', 'outbound')
+      .order('created_at', { ascending: true })
+
+    let sentimentQuery = supabase
+      .from('sentiment_responses')
+      .select('response, created_at')
+      .eq('vendor_id', vendor.id)
+
+    if (cutoff) {
+      smsQuery       = smsQuery.gte('created_at', cutoff)
+      sentimentQuery = sentimentQuery.gte('created_at', cutoff)
+      // For subscribers, filter by opted_in_at only when not "all time"
+      // but we still need all subscribers to compute cumulative growth correctly
+    }
 
     const [
       { data: subscribers },
       { data: smsLog },
       { data: sentimentData },
-    ] = await Promise.all([
-      supabase
-        .from('subscribers')
-        .select('opted_in_at, is_active')
-        .eq('vendor_id', vendor.id)
-        .order('opted_in_at', { ascending: true }),
+    ] = await Promise.all([subsQuery, smsQuery, sentimentQuery])
 
-      supabase
-        .from('sms_log')
-        .select('created_at, direction, status')
-        .eq('vendor_id', vendor.id)
-        .eq('direction', 'outbound')
-        .gte('created_at', cutoff)
-        .order('created_at', { ascending: true }),
+    // ── Subscriber growth (cumulative, over chart range) ──────────────────────
+    const days    = buildDayRange(chartDays)
+    const allSubs = subscribers ?? []
 
-      supabase
-        .from('sentiment_responses')
-        .select('response')
-        .eq('vendor_id', vendor.id),
-    ])
-
-    // ── Subscriber growth (cumulative, last 30 days) ──────────────────────────
-    const days      = last30Days()
-    const allSubs   = subscribers ?? []
-
-    // Count subscribers that existed before each day (cumulative)
     const growth = days.map(day => {
       const count = allSubs.filter(s => toDateStr(s.opted_in_at) <= day).length
       return { date: labelDate(day), subscribers: count }
     })
-    setGrowthData(growth)
+    // When "all time", thin out to avoid overcrowding (show every ~3rd point)
+    setGrowthData(selectedRange === null && growth.length > 30
+      ? growth.filter((_, i) => i % 3 === 0)
+      : growth
+    )
 
-    // ── SMS per day (last 30 days) ────────────────────────────────────────────
+    // ── SMS per day ────────────────────────────────────────────────────────────
     const smsByDay = {}
     days.forEach(d => { smsByDay[d] = { sent: 0, failed: 0 } })
     ;(smsLog ?? []).forEach(entry => {
@@ -169,8 +219,8 @@ export function AnalyticsPage() {
       }
     })
     const smsChartData = days.map(d => ({
-      date:   labelDate(d),
-      SMS:    smsByDay[d].sent,
+      date: labelDate(d),
+      SMS:  smsByDay[d].sent,
     }))
     setSmsData(smsChartData)
 
@@ -178,6 +228,7 @@ export function AnalyticsPage() {
     const happy   = (sentimentData ?? []).filter(r => r.response === 'happy').length
     const unhappy = (sentimentData ?? []).filter(r => r.response === 'unhappy').length
     setSentiment({ happy, unhappy })
+    setResponseCount(happy + unhappy)
 
     // ── Totals ────────────────────────────────────────────────────────────────
     const activeCount = allSubs.filter(s => s.is_active).length
@@ -189,139 +240,183 @@ export function AnalyticsPage() {
     setLoading(false)
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 size={24} className="animate-spin text-text-tertiary" />
-      </div>
-    )
-  }
+  const rangeLabel = DATE_RANGES.find(r => r.days === selectedRange)?.label ?? '30 days'
 
   return (
     <div className="p-6 md:p-8 max-w-5xl mx-auto">
 
       {/* Header */}
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="font-display font-bold text-2xl text-text-primary">Analytics</h1>
         <p className="text-text-secondary font-body text-sm mt-0.5">
-          Last 30 days of activity for your truck.
+          Activity for your truck — {rangeLabel}.
         </p>
       </div>
 
-      {/* Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-        <StatCard
-          icon={Users}
-          label="Active subscribers"
-          value={totals.subscribers}
-          iconColor="bg-accent"
-        />
-        <StatCard
-          icon={MessageSquare}
-          label="SMS sent (30 days)"
-          value={totals.smsSent}
-          iconColor="bg-success"
-        />
-        <StatCard
-          icon={TrendingUp}
-          label="Delivery rate"
-          value={`${totals.deliveryRate}%`}
-          sub="Sent vs attempted"
-          iconColor="bg-accent"
-        />
+      {/* Date Range Picker */}
+      <div className="mb-6">
+        <div className="flex gap-1 bg-[#141414] border border-[#2a2a2a] rounded-lg p-1 w-fit">
+          {DATE_RANGES.map(range => (
+            <button
+              key={range.label}
+              onClick={() => setSelectedRange(range.days)}
+              className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                selectedRange === range.days
+                  ? 'bg-[#FF6B35] text-[#0a0a0a]'
+                  : 'text-[#888888] hover:text-[#f5f5f5]'
+              }`}
+            >
+              {range.label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Stat Cards */}
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          {Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          <StatCard
+            icon={Users}
+            label="Active subscribers"
+            value={totals.subscribers}
+            iconColor="bg-accent"
+          />
+          <StatCard
+            icon={MessageSquare}
+            label={`SMS sent (${rangeLabel})`}
+            value={totals.smsSent}
+            iconColor="bg-success"
+          />
+          <StatCard
+            icon={TrendingUp}
+            label="Delivery rate"
+            value={`${totals.deliveryRate}%`}
+            sub="Sent vs attempted"
+            iconColor="bg-accent"
+          />
+          <StatCard
+            icon={Reply}
+            label="Responses received"
+            value={responseCount}
+            sub={responseCount > 0 ? `${sentiment.happy} happy · ${sentiment.unhappy} unhappy` : 'No responses yet'}
+            iconColor="bg-surface-raised"
+          />
+        </div>
+      )}
 
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-
-        {/* Subscriber Growth */}
-        <div className="bg-surface border border-border rounded-xl p-5">
-          <h2 className="font-display font-bold text-base text-text-primary mb-5">
-            Subscriber Growth
-          </h2>
-          <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={growthData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-              <defs>
-                <linearGradient id="subGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="var(--color-accent)" stopOpacity={0.15} />
-                  <stop offset="95%" stopColor="var(--color-accent)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-              <XAxis
-                dataKey="date"
-                tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
-                tickLine={false}
-                axisLine={false}
-                interval={6}
-              />
-              <YAxis
-                tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
-                tickLine={false}
-                axisLine={false}
-                allowDecimals={false}
-              />
-              <Tooltip content={<ChartTooltip />} />
-              <Area
-                type="monotone"
-                dataKey="subscribers"
-                name="subscribers"
-                stroke="var(--color-accent)"
-                strokeWidth={2}
-                fill="url(#subGradient)"
-                dot={false}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+      {loading ? (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          <ChartSkeleton />
+          <ChartSkeleton />
         </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
 
-        {/* SMS Sent Per Day */}
-        <div className="bg-surface border border-border rounded-xl p-5">
-          <h2 className="font-display font-bold text-base text-text-primary mb-5">
-            SMS Sent Per Day
-          </h2>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={smsData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
-              <XAxis
-                dataKey="date"
-                tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
-                tickLine={false}
-                axisLine={false}
-                interval={6}
-              />
-              <YAxis
-                tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
-                tickLine={false}
-                axisLine={false}
-                allowDecimals={false}
-              />
-              <Tooltip content={<ChartTooltip />} />
-              <Bar
-                dataKey="SMS"
-                fill="var(--color-accent)"
-                radius={[4, 4, 0, 0]}
-                maxBarSize={32}
-              />
-            </BarChart>
-          </ResponsiveContainer>
+          {/* Subscriber Growth */}
+          <div className="bg-surface border border-border rounded-xl p-5">
+            <h2 className="font-display font-bold text-base text-text-primary mb-5">
+              Subscriber Growth
+            </h2>
+            <ResponsiveContainer width="100%" height={200}>
+              <AreaChart data={growthData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                <defs>
+                  <linearGradient id="subGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="var(--color-accent)" stopOpacity={0.15} />
+                    <stop offset="95%" stopColor="var(--color-accent)" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
+                  tickLine={false}
+                  axisLine={false}
+                  interval={Math.max(Math.floor(growthData.length / 6) - 1, 0)}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
+                  tickLine={false}
+                  axisLine={false}
+                  allowDecimals={false}
+                />
+                <Tooltip content={<ChartTooltip />} />
+                <Area
+                  type="monotone"
+                  dataKey="subscribers"
+                  name="subscribers"
+                  stroke="var(--color-accent)"
+                  strokeWidth={2}
+                  fill="url(#subGradient)"
+                  dot={false}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* SMS Sent Per Day */}
+          <div className="bg-surface border border-border rounded-xl p-5">
+            <h2 className="font-display font-bold text-base text-text-primary mb-5">
+              SMS Sent Per Day
+            </h2>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={smsData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
+                  tickLine={false}
+                  axisLine={false}
+                  interval={Math.max(Math.floor(smsData.length / 6) - 1, 0)}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: 'var(--color-text-tertiary)', fontFamily: 'inherit' }}
+                  tickLine={false}
+                  axisLine={false}
+                  allowDecimals={false}
+                />
+                <Tooltip content={<ChartTooltip />} />
+                <Bar
+                  dataKey="SMS"
+                  fill="var(--color-accent)"
+                  radius={[4, 4, 0, 0]}
+                  maxBarSize={32}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
         </div>
-
-      </div>
+      )}
 
       {/* Sentiment */}
-      <div className="bg-surface border border-border rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-5">
-          <Smile size={16} className="text-text-secondary" />
-          <h2 className="font-display font-bold text-base text-text-primary">
-            Customer Sentiment
-          </h2>
-          <span className="text-text-tertiary font-body text-xs ml-1">
-            ({sentiment.happy + sentiment.unhappy} total responses)
-          </span>
+      {loading ? (
+        <div className="bg-surface border border-border rounded-xl p-5 animate-pulse">
+          <div className="h-4 w-40 bg-surface-raised rounded mb-5" />
+          <div className="h-4 rounded-full bg-surface-raised mb-3" />
+          <div className="flex justify-between">
+            <div className="h-3 w-24 bg-surface-raised rounded" />
+            <div className="h-3 w-24 bg-surface-raised rounded" />
+          </div>
         </div>
-        <SentimentBar happy={sentiment.happy} unhappy={sentiment.unhappy} />
-      </div>
+      ) : (
+        <div className="bg-surface border border-border rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-5">
+            <Smile size={16} className="text-text-secondary" />
+            <h2 className="font-display font-bold text-base text-text-primary">
+              Customer Sentiment
+            </h2>
+            <span className="text-text-tertiary font-body text-xs ml-1">
+              ({sentiment.happy + sentiment.unhappy} total responses)
+            </span>
+          </div>
+          <SentimentBar happy={sentiment.happy} unhappy={sentiment.unhappy} />
+        </div>
+      )}
 
     </div>
   )

@@ -1,7 +1,10 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
 import { ProtectedRoute, PublicOnlyRoute } from './components/ProtectedRoute'
 import { AppLayout } from './layouts/AppLayout'
+
+// Landing page
+import { LandingPage } from './pages/LandingPage'
 
 // Auth pages
 import { SignupPage }         from './pages/auth/SignupPage'
@@ -58,8 +61,8 @@ export default function App() {
             </Route>
           </Route>
 
-          {/* Default redirect */}
-          <Route path="/" element={<Navigate to="/login" replace />} />
+          {/* Landing page */}
+          <Route path="/" element={<LandingPage />} />
 
           {/* Public vendor schedule page — must be last to avoid catching /login etc */}
           <Route path="/:slug" element={<PublicSchedulePage />} />

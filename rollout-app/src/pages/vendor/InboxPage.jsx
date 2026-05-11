@@ -121,6 +121,7 @@ function ThreadPanel({ conv, vendor, onBack, onResolved }) {
   const [reply, setReply]         = useState('')
   const [sending, setSending]     = useState(false)
   const [resolving, setResolving] = useState(false)
+  const [replyError, setReplyError] = useState(null)
   const bottomRef                 = useRef(null)
   const textareaRef               = useRef(null)
 
@@ -168,6 +169,7 @@ function ThreadPanel({ conv, vendor, onBack, onResolved }) {
 
     setSending(true)
     setReply('')
+    setReplyError(null)
 
     const { data, error } = await supabase.functions.invoke('vendor-reply', {
       body: { conversation_id: conv.id, body: text },
@@ -175,7 +177,10 @@ function ThreadPanel({ conv, vendor, onBack, onResolved }) {
 
     if (error || !data?.success) {
       console.error('vendor-reply error:', error)
+      setReplyError('Failed to send message. Please try again.')
       setReply(text)  // Restore on failure
+      setSending(false)
+      return
     }
 
     setSending(false)
@@ -184,10 +189,14 @@ function ThreadPanel({ conv, vendor, onBack, onResolved }) {
 
   async function handleResolve() {
     setResolving(true)
-    await supabase
-      .from('conversations')
-      .update({ status: 'resolved' })
-      .eq('id', conv.id)
+    const { error } = await supabase.functions.invoke('resolve-conversation', {
+      body: { conversation_id: conv.id },
+    })
+    if (error) {
+      console.error('Failed to resolve:', error)
+      setResolving(false)
+      return
+    }
     setResolving(false)
     onResolved(conv.id)
   }
@@ -292,6 +301,9 @@ function ThreadPanel({ conv, vendor, onBack, onResolved }) {
             }
           </button>
         </div>
+        {replyError && (
+          <p className="text-red-400 font-body text-xs mt-2">{replyError}</p>
+        )}
         {conv.status === 'resolved' && (
           <p className="text-text-tertiary font-body text-xs mt-2 text-center">
             This conversation is resolved. Reopen it by sending a reply.

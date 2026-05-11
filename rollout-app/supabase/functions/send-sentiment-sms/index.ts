@@ -117,27 +117,24 @@ Deno.serve(async (req: Request) => {
     console.error('[CP1] unauthorized — invalid or missing cron secret')
     return json({ error: 'Unauthorized' }, 401)
   }
-  console.log('[CP1] auth ok')
 
-  // ── [CP2] Init service role client ────────────────────────────────────────
+  // ── Init service role client ──────────────────────────────────────────────
   const serviceRoleKey = Deno.env.get('SERVICE_ROLE_KEY')
   if (!serviceRoleKey) {
-    console.error('[CP2] SERVICE_ROLE_KEY not set')
+    console.error('SERVICE_ROLE_KEY not set')
     return json({ error: 'Server misconfiguration: SERVICE_ROLE_KEY not set' }, 500)
   }
   const supabase = createClient(Deno.env.get('SUPABASE_URL')!, serviceRoleKey)
-  console.log('[CP2] service role client ok')
 
-  // ── [CP3] Load Twilio credentials ─────────────────────────────────────────
+  // ── Load Twilio credentials ───────────────────────────────────────────────
   const twilioAccountSid = Deno.env.get('TWILIO_ACCOUNT_SID')
   const twilioAuthToken  = Deno.env.get('TWILIO_AUTH_TOKEN')
   if (!twilioAccountSid || !twilioAuthToken) {
-    console.error('[CP3] Twilio credentials not set')
+    console.error('Twilio credentials not set')
     return json({ error: 'Server misconfiguration: Twilio credentials not set' }, 500)
   }
-  console.log('[CP3] Twilio credentials ok')
 
-  // ── [CP4] Fetch eligible vendors ──────────────────────────────────────────
+  // ── Fetch eligible vendors ────────────────────────────────────────────────
   const { data: vendors, error: vendorErr } = await supabase
     .from('vendors')
     .select('id, name, timezone, sentiment_delay_hours, twilio_phone_number')
@@ -145,19 +142,16 @@ Deno.serve(async (req: Request) => {
     .not('twilio_phone_number', 'is', null)
 
   if (vendorErr) {
-    console.error('[CP4] vendor fetch failed:', vendorErr.message)
+    console.error('vendor fetch failed:', vendorErr.message)
     return json({ error: 'Failed to fetch vendors', details: vendorErr.message }, 500)
   }
 
-  console.log(`[CP4] ${vendors?.length ?? 0} eligible vendor(s)`)
-
-  // ── [CP5] Process each vendor ─────────────────────────────────────────────
+  // ── Process each vendor ───────────────────────────────────────────────────
   let totalSmsSent   = 0
   let totalSmsFailed = 0
 
   for (const vendor of vendors ?? []) {
     const today = getTodayInZone(vendor.timezone)
-    console.log(`[CP5] vendor ${vendor.id} (${vendor.name}), today=${today}`)
 
     // ── Fetch locations due for sentiment ────────────────────────────────────
     const { data: locations, error: locErr } = await supabase
@@ -169,18 +163,15 @@ Deno.serve(async (req: Request) => {
       .eq('sentiment_sms_sent', false)
 
     if (locErr) {
-      console.error(`[CP5] location fetch failed for vendor ${vendor.id}:`, locErr.message)
+      console.error(`location fetch failed for vendor ${vendor.id}:`, locErr.message)
       continue
     }
 
     const dueLocations = (locations ?? []).filter(loc => isSentimentDue(loc, vendor))
 
     if (dueLocations.length === 0) {
-      console.log(`[CP5] no locations due for sentiment for vendor ${vendor.id}`)
       continue
     }
-
-    console.log(`[CP5] ${dueLocations.length} location(s) due for sentiment`)
 
     // ── Fetch idle subscribers (don't interrupt active conversations) ─────────
     const { data: idleStates, error: stateErr } = await supabase
@@ -190,39 +181,42 @@ Deno.serve(async (req: Request) => {
       .eq('current_state', 'idle')
 
     if (stateErr) {
-      console.error(`[CP5] sms state fetch failed for vendor ${vendor.id}:`, stateErr.message)
+      console.error(`sms state fetch failed for vendor ${vendor.id}:`, stateErr.message)
       continue
     }
 
     const idleSubscriberIds = (idleStates ?? []).map(s => s.subscriber_id)
 
     if (idleSubscriberIds.length === 0) {
-      console.log(`[CP5] no idle subscribers for vendor ${vendor.id} — marking locations sent`)
       const ids = dueLocations.map(l => l.id)
       await supabase.from('locations').update({ sentiment_sms_sent: true }).in('id', ids)
       continue
     }
 
-    const { data: subscribers, error: subErr } = await supabase
+    const { data: rawSubscribers, error: subErr } = await supabase
       .from('subscribers')
-      .select('id, phone_number')
+      .select('id, phone_number, opted_in_at, last_sentiment_sent_at')
       .eq('vendor_id', vendor.id)
       .eq('is_active', true)
       .in('id', idleSubscriberIds)
+      .lt('opted_in_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
 
     if (subErr) {
-      console.error(`[CP5] subscriber fetch failed for vendor ${vendor.id}:`, subErr.message)
+      console.error(`subscriber fetch failed for vendor ${vendor.id}:`, subErr.message)
       continue
     }
 
-    if (!subscribers || subscribers.length === 0) {
-      console.log(`[CP5] no active idle subscribers for vendor ${vendor.id}`)
+    // Filter out subscribers who received sentiment within the last 7 days
+    const subscribers = (rawSubscribers ?? []).filter(s =>
+      !s.last_sentiment_sent_at ||
+      new Date(s.last_sentiment_sent_at) < new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    )
+
+    if (subscribers.length === 0) {
       const ids = dueLocations.map(l => l.id)
       await supabase.from('locations').update({ sentiment_sms_sent: true }).in('id', ids)
       continue
     }
-
-    console.log(`[CP5] sending sentiment to ${subscribers.length} subscriber(s)`)
 
     // ── Build sentiment message ───────────────────────────────────────────────
     const smsBody = `How was your visit to ${vendor.name} today? Reply YES if you loved it or NO if it could be better 🌮`
@@ -246,10 +240,10 @@ Deno.serve(async (req: Request) => {
         sendOk    = result.ok
         twilioSid = result.sid
         if (!result.ok) {
-          console.error(`[CP5] Twilio send failed for subscriber ${subscriber.id}:`, result.errorMessage)
+          console.error(`Twilio send failed for subscriber ${subscriber.id}:`, result.errorMessage)
         }
       } catch (err) {
-        console.error(`[CP5] Twilio request threw for subscriber ${subscriber.id}:`, err.message)
+        console.error(`Twilio request threw for subscriber ${subscriber.id}:`, err.message)
       }
 
       // Log every attempt regardless of outcome
@@ -293,13 +287,9 @@ Deno.serve(async (req: Request) => {
       .in('id', locationIds)
 
     if (markErr) {
-      console.error(`[CP5] failed to mark locations sentiment_sms_sent for vendor ${vendor.id}:`, markErr.message)
-    } else {
-      console.log(`[CP5] marked ${locationIds.length} location(s) as sentiment_sms_sent`)
+      console.error(`failed to mark locations sentiment_sms_sent for vendor ${vendor.id}:`, markErr.message)
     }
   }
-
-  console.log(`[CP5] done — sent: ${totalSmsSent}, failed: ${totalSmsFailed}`)
 
   return json({
     success:           true,

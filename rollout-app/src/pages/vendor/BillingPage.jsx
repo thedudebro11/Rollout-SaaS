@@ -189,6 +189,7 @@ export function BillingPage() {
   const [subscription, setSubscription] = useState(null)
   const [upgrading, setUpgrading]     = useState(null)
   const [successMsg, setSuccessMsg]   = useState('')
+  const [checkoutError, setCheckoutError] = useState(null)
 
   useEffect(() => {
     if (vendor) loadSubscription()
@@ -223,12 +224,14 @@ export function BillingPage() {
 
   async function handleUpgrade(planName) {
     setUpgrading(planName)
+    setCheckoutError(null)
     const { data, error } = await supabase.functions.invoke('create-checkout-session', {
       body: { plan_name: planName },
     })
 
     if (error || !data?.url) {
       console.error('checkout error:', error)
+      setCheckoutError('Something went wrong. Please try again.')
       setUpgrading(null)
       return
     }
@@ -281,6 +284,10 @@ export function BillingPage() {
           />
         ))}
       </div>
+
+      {checkoutError && (
+        <p className="text-red-400 text-sm text-center mt-2">{checkoutError}</p>
+      )}
 
       {/* Footer note */}
       <p className="text-text-tertiary font-body text-xs text-center mt-8">

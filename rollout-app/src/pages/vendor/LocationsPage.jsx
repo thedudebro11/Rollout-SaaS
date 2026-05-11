@@ -138,7 +138,7 @@ function LocationCard({ loc, onEdit, onDelete }) {
 
 // ── Add / Edit Sheet ──────────────────────────────────────────────────────────
 
-function LocationSheet({ mode, initial, onSave, onClose, saving }) {
+function LocationSheet({ mode, initial, onSave, onClose, saving, serverError }) {
   const [form, setForm]   = useState(initial)
   const [error, setError] = useState('')
 
@@ -281,6 +281,9 @@ function LocationSheet({ mode, initial, onSave, onClose, saving }) {
             {error && (
               <p className="text-error text-sm font-body">{error}</p>
             )}
+            {serverError && (
+              <p className="text-red-400 text-sm font-body">{serverError}</p>
+            )}
           </div>
 
           {/* Footer — inside <form> so Enter submits */}
@@ -311,6 +314,7 @@ export function LocationsPage() {
   const [showSheet, setShowSheet]   = useState(null)   // 'add' | 'edit'
   const [editingLoc, setEditingLoc] = useState(null)
   const [saving, setSaving]         = useState(false)
+  const [sheetError, setSheetError] = useState('')
 
   useEffect(() => {
     if (vendor) loadLocations()
@@ -336,6 +340,7 @@ export function LocationsPage() {
 
   async function handleSave(form) {
     setSaving(true)
+    setSheetError('')
 
     const payload = {
       vendor_id:       vendor.id,
@@ -350,15 +355,52 @@ export function LocationsPage() {
 
     if (showSheet === 'add') {
       const { error } = await supabase.from('locations').insert(payload)
+      if (error) {
+        setSheetError('Failed to save location. Please try again.')
+        setSaving(false)
+        return
+      }
+
+      // Generate next 7 weekly occurrences for recurring locations
+      if (form.is_recurring) {
+        const baseDate = new Date(form.date)
+        const futureRows = []
+        for (let week = 1; week <= 7; week++) {
+          const futureDate = new Date(baseDate)
+          futureDate.setDate(baseDate.getDate() + week * 7)
+          futureRows.push({
+            vendor_id:            vendor.id,
+            address:              form.address.trim(),
+            date:                 futureDate.toISOString().split('T')[0],
+            start_time:           form.start_time,
+            end_time:             form.end_time,
+            notes:                form.notes.trim() || null,
+            is_recurring:         false,
+            morning_sms_sent:     false,
+            sentiment_sms_sent:   false,
+          })
+        }
+        if (futureRows.length) {
+          await supabase.from('locations').insert(futureRows)
+        }
+      }
+
       setSaving(false)
-      if (!error) { setShowSheet(null); loadLocations() }
+      setShowSheet(null)
+      loadLocations()
     } else {
       const { error } = await supabase
         .from('locations')
         .update(payload)
         .eq('id', editingLoc.id)
+      if (error) {
+        setSheetError('Failed to save location. Please try again.')
+        setSaving(false)
+        return
+      }
       setSaving(false)
-      if (!error) { setShowSheet(null); loadLocations() }
+      setShowSheet(null)
+      loadLocations()
     }
   }
 
@@ -494,8 +536,9 @@ export function LocationsPage() {
           mode={showSheet}
           initial={sheetInitial}
           onSave={handleSave}
-          onClose={() => setShowSheet(null)}
+          onClose={() => { setShowSheet(null); setSheetError('') }}
           saving={saving}
+          serverError={sheetError}
         />
       )}
     </div>

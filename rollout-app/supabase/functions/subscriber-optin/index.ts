@@ -96,13 +96,20 @@ Deno.serve(async (req: Request) => {
   }
 
   // ── Create idle SMS state row ───────────────────────────────────────────────
-  await supabase
+  const { error: stateInsertError } = await supabase
     .from('subscriber_sms_state')
     .insert({
       vendor_id: vendor.id,
       subscriber_id: newSub.id,
       current_state: 'idle',
     })
+
+  if (stateInsertError) {
+    console.error('subscriber_sms_state insert failed:', stateInsertError.message)
+    // Rollback: delete the subscriber row we just created
+    await supabase.from('subscribers').delete().eq('id', newSub.id)
+    return json({ error: 'Failed to initialize subscriber state. Please try again.' }, 500)
+  }
 
   // ── Send confirmation SMS via Twilio ────────────────────────────────────────
   const accountSid = Deno.env.get('TWILIO_ACCOUNT_SID')
@@ -150,8 +157,6 @@ Deno.serve(async (req: Request) => {
       console.error('Twilio request threw:', err.message)
       // Non-fatal
     }
-  } else {
-    console.log('Twilio not configured — skipping confirmation SMS')
   }
 
   return json({ success: true, already_subscribed: false })

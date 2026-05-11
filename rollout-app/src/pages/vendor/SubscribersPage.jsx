@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users, UserCheck, UserX, Search, Loader2 } from 'lucide-react'
+import { Users, UserCheck, UserX, Search } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -18,6 +18,28 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric',
   })
+}
+
+function timeAgo(iso) {
+  if (!iso) return '—'
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins  = Math.floor(diff / 60_000)
+  const hrs   = Math.floor(mins / 60)
+  const days  = Math.floor(hrs / 24)
+  if (mins < 2)   return 'just now'
+  if (mins < 60)  return `${mins}m ago`
+  if (hrs < 24)   return `${hrs}h ago`
+  if (days === 1) return 'yesterday'
+  if (days < 30)  return `${days}d ago`
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+// Get the most recent sentiment_response for a subscriber
+function latestSentiment(sentimentResponses) {
+  if (!sentimentResponses || sentimentResponses.length === 0) return null
+  return [...sentimentResponses].sort(
+    (a, b) => new Date(b.created_at) - new Date(a.created_at)
+  )[0]
 }
 
 // ── Stat Badge ────────────────────────────────────────────────────────────────
@@ -39,6 +61,12 @@ function StatBadge({ icon: Icon, label, value, color }) {
 // ── Subscriber Row ────────────────────────────────────────────────────────────
 
 function SubscriberRow({ sub }) {
+  const latest = latestSentiment(sub.sentiment_responses)
+
+  const ratingEmoji = latest
+    ? (latest.response_type === 'happy' ? '😊' : latest.response_type === 'unhappy' ? '😞' : '—')
+    : '—'
+
   return (
     <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 hover:bg-surface-raised transition-colors">
       {/* Status dot */}
@@ -54,6 +82,16 @@ function SubscriberRow({ sub }) {
         Joined {formatDate(sub.opted_in_at)}
       </p>
 
+      {/* Last Visit Rating */}
+      <p className="text-base w-7 text-center flex-shrink-0 hidden md:block" title="Last visit rating">
+        {ratingEmoji}
+      </p>
+
+      {/* Last Feedback */}
+      <p className="text-text-tertiary font-body text-xs w-24 text-right flex-shrink-0 hidden lg:block">
+        {latest ? timeAgo(latest.created_at) : '—'}
+      </p>
+
       {/* Status badge */}
       <span className={`text-[10px] font-body font-semibold px-2 py-0.5 rounded-full flex-shrink-0 ${
         sub.is_active
@@ -62,6 +100,19 @@ function SubscriberRow({ sub }) {
       }`}>
         {sub.is_active ? 'Active' : 'Opted out'}
       </span>
+    </div>
+  )
+}
+
+// ── Skeleton Row ──────────────────────────────────────────────────────────────
+
+function SkeletonRow() {
+  return (
+    <div className="flex items-center gap-4 px-5 py-3.5 border-b border-border last:border-0 animate-pulse">
+      <div className="w-2 h-2 rounded-full bg-surface-raised flex-shrink-0" />
+      <div className="flex-1 h-3.5 bg-surface-raised rounded" />
+      <div className="h-3 w-24 bg-surface-raised rounded hidden sm:block" />
+      <div className="h-5 w-16 bg-surface-raised rounded-full" />
     </div>
   )
 }
@@ -84,7 +135,16 @@ export function SubscribersPage() {
     setLoading(true)
     const { data } = await supabase
       .from('subscribers')
-      .select('id, phone_number, opted_in_at, is_active')
+      .select(`
+        id,
+        phone_number,
+        opted_in_at,
+        is_active,
+        sentiment_responses (
+          response_type,
+          created_at
+        )
+      `)
       .eq('vendor_id', vendor.id)
       .order('opted_in_at', { ascending: false })
     setSubscribers(data ?? [])
@@ -169,13 +229,15 @@ export function SubscribersPage() {
           <div className="w-2 flex-shrink-0" />
           <p className="flex-1 text-text-tertiary font-body text-xs font-semibold uppercase tracking-wider">Phone</p>
           <p className="text-text-tertiary font-body text-xs font-semibold uppercase tracking-wider hidden sm:block">Joined</p>
+          <p className="text-text-tertiary font-body text-xs font-semibold uppercase tracking-wider w-7 text-center hidden md:block">Rating</p>
+          <p className="text-text-tertiary font-body text-xs font-semibold uppercase tracking-wider w-24 text-right hidden lg:block">Last Feedback</p>
           <p className="text-text-tertiary font-body text-xs font-semibold uppercase tracking-wider">Status</p>
         </div>
 
         {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <Loader2 size={20} className="animate-spin text-text-tertiary" />
-          </div>
+          <>
+            {Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)}
+          </>
         ) : filtered.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-text-secondary font-body text-sm font-medium mb-1">
